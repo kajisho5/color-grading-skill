@@ -143,6 +143,75 @@ def test_strip_dovi_refuses_non_hevc(workspace):
     assert d["ok"] is False and d["error"]["code"] == "TOOL_ERROR" and d["error"]["details"]["error_kind"] == "input"
 
 
+def test_primary_correction_defaults_are_near_identity(workspace):
+    """All-default PRIMARY_CORRECTION (exposure=0, contrast=1, saturation=1, temperature=6500, tint=0) is a
+    technical no-op: re-encoding introduces only minor lossy rounding, never a visible colour shift."""
+    src_color = sample_avg_color(workspace / "sdr.mp4")
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source")])
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    out_color = sample_avg_color(workspace / "out" / "main.mp4")
+    # measured: chaining four filters (exposure/colortemperature/colorbalance/eq), each an RGB<->YUV round trip,
+    # plus the x264 re-encode itself, costs a few levels of rounding even at all-default (identity) parameters --
+    # this is real, observed drift, not a colour shift, so the tolerance is wider than a single-filter check
+    for src_c, out_c in zip(src_color, out_color):
+        assert abs(int(src_c) - int(out_c)) <= 20, (src_color, out_color)
+    p = probe(workspace / "out" / "main.mp4")
+    assert abs(p["duration"] - 3.0) < 0.2 and p["width"] == 160 and p["height"] == 90
+
+
+def test_primary_correction_saturation_zero_desaturates(workspace):
+    """saturation=0.0 is a deterministic, measurable transform (near-equal R/G/B), not a subjective 'look'."""
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", saturation=0.0)])
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    r, g, b = sample_avg_color(workspace / "out" / "main.mp4")
+    assert max(r, g, b) - min(r, g, b) <= 10, (r, g, b)
+
+
+def test_primary_correction_out_of_range_rejected_through_cli(workspace):
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", exposure=10.0)])
+    code, d = run(doc)
+    assert d["ok"] is False and d["error"]["code"] == "INVALID_REQUEST" and code == EXIT_CODES["INVALID_REQUEST"]
+    assert not (workspace / "out").exists()
+
+
+def test_primary_correction_measurements_are_observed_not_judged(workspace):
+    """Before/after measurement comes from ffmpeg-skill's existing signalstats-based analyze_levels() (real,
+    technical numbers), reused end to end through this skill's provenance -- never a subjective judgement."""
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", exposure=1.0, saturation=0.0)])
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    r = results(d)["op:c"]
+    for side in ("input", "output"):
+        m = r["measurements"][side]
+        assert isinstance(m["y_avg"], (int, float)) and isinstance(m["saturation_avg"], (int, float))
+    assert r["measurements"]["output"]["y_avg"] != r["measurements"]["input"]["y_avg"]
+    prov_ops = d["outputs"][0]["provenance"]["operations"]
+    correction_entry = next(o for o in prov_ops if o["type"] == "PRIMARY_CORRECTION")
+    assert correction_entry["measurements"] == r["measurements"]
+
+
+def test_primary_correction_invalid_parameter_type_rejected(workspace):
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source")])
+    doc["project"]["operations"][0]["parameters"]["exposure"] = "1.0"
+    code, d = run(doc)
+    assert d["ok"] is False and d["error"]["code"] == "INVALID_REQUEST" and code == EXIT_CODES["INVALID_REQUEST"]
+
+
+def test_chained_pipeline_primary_correction_then_lut(workspace):
+    """Ordering guidance (docs/decisions.md): technical primary correction before a creative LUT -- expressed as
+    an ordinary two-node chain in the existing operation graph, not a new pipeline concept."""
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", exposure=0.3), op("l", "LUT_APPLY", "op:c", lut_path="invert.cube")])
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    p = probe(workspace / "out" / "main.mp4")
+    assert p["pix_fmt"] == "yuv420p" and abs(p["duration"] - 3.0) < 0.2
+    assert [r["status"] for r in d["results"] if r["type"] != "SOURCE"] == ["completed", "completed"]
+    chain = d["outputs"][0]["provenance"]["operations"]
+    assert [c["type"] for c in chain] == ["LUT_APPLY", "PRIMARY_CORRECTION", "SOURCE"]
+
+
 def test_chained_pipeline_hdr_to_sdr_then_lut(workspace, capabilities):
     if capabilities.get("filter:zscale") == "unsupported":
         pytest.skip("filter:zscale not available in this ffmpeg build (needs libzimg; e.g. macOS Homebrew's plain 'ffmpeg' formula omits it)")

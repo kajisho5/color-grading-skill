@@ -11,7 +11,7 @@
 
 Which ffmpeg-skill tools are used, and for what (docs/ffmpeg-skill.md):
   probe   source facts and every artifact's validation
-  color   HDR_TO_SDR (--to-sdr), LUT_APPLY (--lut), RETAG (--retag), STRIP_DOVI (--strip-dovi)"""
+  color   HDR_TO_SDR (--to-sdr), LUT_APPLY (--lut), RETAG (--retag), STRIP_DOVI (--strip-dovi), PRIMARY_CORRECTION (--correct)"""
 from __future__ import annotations
 
 import json
@@ -28,14 +28,17 @@ import time
 from .errors import ColorError
 
 SUPPORTED_CONTRACT_VERSION = "1.0"
-SUPPORTED_MIN = (0, 9, 1)     # verified: scripts/color.py --to-sdr/--lut/--retag/--strip-dovi with --crf/--preset/--tonemap/--peak/--desat/--lut-strength/--force
+# verified: scripts/color.py --to-sdr/--lut/--retag/--strip-dovi/--correct with
+# --crf/--preset/--tonemap/--peak/--desat/--lut-strength/--force/--exposure/--contrast/--saturation/--temperature/--tint
+SUPPORTED_MIN = (0, 9, 2)
 SUPPORTED_MAX_EXCLUSIVE = (1, 0, 0)
 ENV_DIR_KEYS = ("COLOR_GRADING_FFMPEG_SKILL_DIR", "VIDEO_AGENT_FFMPEG_SKILL_DIR")
 TOOLS_USED = ("probe", "color")
 # flags of the ffmpeg-skill input_schema this adapter emits; checked against the live contract in doctor
 FLAGS_USED: Dict[str, Tuple[str, ...]] = {
     "probe": ("inputs",),
-    "color": ("input", "output", "to_sdr", "lut", "retag", "strip_dovi", "tonemap", "peak", "desat", "lut_strength", "force", "crf", "preset", "json"),
+    "color": ("input", "output", "to_sdr", "lut", "retag", "strip_dovi", "correct", "tonemap", "peak", "desat", "lut_strength", "force",
+              "exposure", "contrast", "saturation", "temperature", "tint", "crf", "preset", "json"),
 }
 _ENV_KEEP = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "TERM",
              "SYSTEMROOT", "SYSTEMDRIVE", "PATHEXT", "COMSPEC", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA")

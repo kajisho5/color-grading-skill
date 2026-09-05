@@ -66,6 +66,18 @@ def test_lut_apply_parameter_injection_is_rejected(payload):
     assert ei.value.code == "INVALID_REQUEST"
 
 
+@pytest.mark.parametrize("payload", [
+    {"exposure": "1; rm -rf /"}, {"exposure": "eq=brightness=1"}, {"exposure": [1.0]}, {"exposure": {"value": 1.0}},
+    {"contrast": "1.0,eq=saturation=5"}, {"temperature": "$(rm -rf /)"}, {"preset": "medium; rm -rf /"}, {"crf": "18; rm -rf /"},
+    {"exposure": 10.0}, {"contrast": -1.0}, {"saturation": 3.0}, {"temperature": 100.0}, {"tint": 2.0},
+])
+def test_primary_correction_parameter_injection_and_out_of_range_is_rejected(payload):
+    from color_grading.model import parse_request
+    with pytest.raises(ColorError) as ei:
+        parse_request(request_doc([{"op_id": "c", "type": "PRIMARY_CORRECTION", "input": "source", "parameters": payload}]))
+    assert ei.value.code == "INVALID_REQUEST"
+
+
 @pytest.mark.parametrize("path", ["../secret.mp4", "/etc/passwd", "out/../../x.mp4", "CON.mp4", "-i.mp4", "x\x00.mp4", "a|b.mp4"])
 def test_unsafe_output_paths_through_cli(workspace, path):
     doc = request_doc([], outputs=[{"output_id": "o", "operation": "source", "path": path, "format": "mp4"}])
@@ -193,6 +205,9 @@ def test_argv_builder_uses_only_fixed_flags_numbers_enums_and_resolved_paths(wor
     retag_st = NodeState(retag_node)
     dovi_node = Node("op:d", "STRIP_DOVI", ["source"], {})
     dovi_st = NodeState(dovi_node)
+    correction_node = Node("op:c", "PRIMARY_CORRECTION", ["source"],
+                           {"exposure": 0.5, "contrast": 1.1, "saturation": 0.9, "temperature": 5600.0, "tint": -0.2, "crf": 18, "preset": "medium"})
+    correction_st = NodeState(correction_node)
 
     src = str((workspace / "sdr.mp4").resolve())
     out = workspace / "o.mp4"
@@ -205,7 +220,7 @@ def test_argv_builder_uses_only_fixed_flags_numbers_enums_and_resolved_paths(wor
     # defect measured against an absolute path, docs/ffmpeg-skill.md) -- never a raw, unvalidated request string
     bare_name = re.compile(r"^[^/\\;&|$`\n\x00]+$")
 
-    for st, src_path in ((hdr_st, src), (lut_st, src), (retag_st, src), (dovi_st, src)):
+    for st, src_path in ((hdr_st, src), (lut_st, src), (retag_st, src), (dovi_st, src), (correction_st, src)):
         argv = ex._argv(st, src_path, out)
         for a in argv:
             assert flag_or_enum.match(a) or num.match(a) or os.path.isabs(a) or bare_name.match(a), (st.node.type, a)
@@ -214,3 +229,5 @@ def test_argv_builder_uses_only_fixed_flags_numbers_enums_and_resolved_paths(wor
     assert ex._argv(lut_st, src, out) == [src, "--lut", "invert.cube", "--lut-strength", "0.7500", "--crf", "20", "--preset", "slow", "-o", str(out)]
     assert ex._argv(retag_st, src, out) == [src, "--retag", "bt601", "-o", str(out)]
     assert ex._argv(dovi_st, src, out) == [src, "--strip-dovi", "-o", str(out)]
+    assert ex._argv(correction_st, src, out) == [src, "--correct", "--exposure", "0.5000", "--contrast", "1.1000", "--saturation", "0.9000",
+                                                  "--temperature", "5600.0000", "--tint", "-0.2000", "--crf", "18", "--preset", "medium", "-o", str(out)]

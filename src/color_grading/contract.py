@@ -43,12 +43,13 @@ def skill_contract() -> Dict[str, Any]:
     return {
         "schema": CONTRACT_SCHEMA_ID, "skill_id": SKILL_ID, "id": SKILL_ID, "name": PACKAGE_NAME, "package": PACKAGE_NAME, "version": VERSION,
         "kind": "execution", "role": "colour grading / colour correction execution (processing); not decision, not measurement, not automatic look/LUT selection",
-        "description": "Deterministic colour grading execution: HDR-to-SDR tone mapping, 3D .cube LUT application, colour-tag retagging and Dolby Vision RPU "
-                       "removal, executed as a typed operation graph through ffmpeg-skill's public contract, with output validation and provenance. Not an AI agent: "
-                       "it never decides which colour treatment, LUT or look to apply.",
+        "description": "Deterministic colour grading execution: HDR-to-SDR tone mapping, 3D .cube LUT application, colour-tag retagging, Dolby Vision RPU "
+                       "removal, and typed primary colour correction (exposure/contrast/saturation/white balance), executed as a typed operation graph through "
+                       "ffmpeg-skill's public contract, with output validation and provenance. Not an AI agent: it never decides which colour treatment, LUT or "
+                       "look to apply, nor which correction values to use.",
         "repository": "https://github.com/kajisho5/color-grading-skill",
         "not_provided": ["AI reasoning", "decisions", "production plans", "automatic colour grading", "automatic look selection", "automatic LUT selection",
-                         "image understanding", "scene/face detection", "primary colour correction (exposure/contrast/saturation/white balance/gamma/lift/gain/levels/curves)",
+                         "image understanding", "scene/face detection", "shot matching", "gamma/lift/gain/levels/curves colour correction",
                          "container/format conversion (ffmpeg-skill/export)", "arbitrary ffmpeg filters", "shell execution", "network access"],
         "tools": tools,
         "operations": operation_specs(),
@@ -76,7 +77,7 @@ def skill_contract() -> Dict[str, Any]:
         "request": {"schema": REQUEST_SCHEMA_ID, "id_pattern": ID_RE.pattern, "reference_pattern": REF_RE.pattern, "forbidden_fields": sorted(FORBIDDEN_KEYS),
                     "max_operations": MAX_OPERATIONS,
                     "shape": {"schema": REQUEST_SCHEMA_ID, "project": {"project_id": "id", "source": {"source_id": "id", "path": "file"},
-                              "operations": [{"op_id": "id", "type": "HDR_TO_SDR|LUT_APPLY|RETAG|STRIP_DOVI", "input": "source|op:<id>", "parameters": {}}],
+                              "operations": [{"op_id": "id", "type": "HDR_TO_SDR|LUT_APPLY|RETAG|STRIP_DOVI|PRIMARY_CORRECTION", "input": "source|op:<id>", "parameters": {}}],
                               "outputs": [{"output_id": "id", "operation": "source|op:<id>", "path": "file", "format": "mp4|mov|m4v|mkv", "overwrite?": False,
                                            "expect?": {"width?": 1920, "height?": 1080, "duration?": 0, "duration_tolerance?": 0.2, "pix_fmt?": "yuv420p"}}]},
                               "options?": {"reuse_intermediates?": True, "timeout?": 600}}},

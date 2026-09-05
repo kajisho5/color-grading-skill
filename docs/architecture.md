@@ -14,11 +14,11 @@ ffmpeg-skill                    runs ffmpeg / ffprobe                           
 media-analysis-skill            measures inputs for the agent (not colour-specific in 0.1.0)     (meters)
 ```
 
-Responsibilities that are deliberately **absent** here: deciding which colour treatment, LUT or tonemap curve to
-apply; automatic "look" or LUT selection; looking at a frame and judging it "cinematic" or "washed out"; primary
-colour correction (exposure, contrast, saturation, white balance, temperature, tint, gamma, lift, gain, levels,
-curves) — ffmpeg-skill has no typed filter for these yet (docs/ffmpeg-skill.md); production planning; approvals;
-transcription; subtitles; QC; container/format conversion (that is ffmpeg-skill/export).
+Responsibilities that are deliberately **absent** here: deciding which colour treatment, LUT, tonemap curve or
+correction values to apply; automatic "look" or LUT selection; looking at a frame and judging it "cinematic" or
+"washed out"; shot matching; gamma, lift, gain, levels or curves correction — ffmpeg-skill has no typed filter for
+these yet (docs/ffmpeg-skill.md); production planning; approvals; transcription; subtitles; QC; container/format
+conversion (that is ffmpeg-skill/export).
 
 ## Typed Colour Project Model (`model.py`)
 
@@ -31,8 +31,9 @@ transcription; subtitles; QC; container/format conversion (that is ffmpeg-skill/
 | `OperationDependency` (`graph.py`) | node `inputs` (0 or 1), `consumers[]` | topological order = Kahn with smallest ready id first |
 | `OperationResult` (`executor.NodeState`) | `operation_id`, `type`, `tool`, `status`, `artifact`, `input_hash`, `lut?`, `measurements`, `tool_commands_observed`, `error?` | one per node in the response |
 
-Every operation maps 1:1 onto one mode of ffmpeg-skill/color (`--to-sdr`, `--lut`, `--retag`, `--strip-dovi`): this
-skill is a typed front end for that tool's public contract, not a colour-correction engine of its own. There is no
+Every operation maps 1:1 onto one mode of ffmpeg-skill/color (`--to-sdr`, `--lut`, `--retag`, `--strip-dovi`,
+`--correct`): this skill is a typed front end for that tool's public contract, not a colour-correction engine of its
+own. There is no
 timeline and no segment mapping (unlike audio-production-skill): none of the implemented operations change duration
 or frame geometry, so the graph is a set of simple chains rooted at `"source"` (still validated as a general DAG for
 duplicate ids, cycles and unreachable nodes, the same reasons audio-production-skill validates its richer graph).
@@ -65,14 +66,19 @@ edited at the same path does not. `plan_id` hashes every node identity plus the 
    matches, the node is `reused`. Each node is exactly one `ffmpeg-skill/color` call built from typed parameters
    (`executor._argv`): `HDR_TO_SDR` → `--to-sdr --tonemap … --peak … --desat … [--force] --crf … --preset …`;
    `LUT_APPLY` → `--lut <resolved path> --lut-strength … --crf … --preset …`; `RETAG` → `--retag <target>`;
-   `STRIP_DOVI` → `--strip-dovi`.
+   `STRIP_DOVI` → `--strip-dovi`; `PRIMARY_CORRECTION` → `--correct --exposure … --contrast … --saturation …
+   --temperature … --tint … --crf … --preset …`. For `PRIMARY_CORRECTION`, ffmpeg-skill's own before/after
+   `measurements` (from its existing `analyze_levels`/signalstats primitive) come back in the tool's JSON document
+   and are carried into `NodeState.measurements`, the manifest and provenance unchanged — this skill never computes
+   or judges them itself.
 6. Validate every intermediate: exists, size > 0, readable, probed video stream, duration and resolution unchanged
    from the source (within `DURATION_TOLERANCE`), and the operation's own measurable effect: `HDR_TO_SDR` checks the
    output is no longer tagged HDR; `RETAG` checks the exact `(color_space, color_primaries, color_transfer)` triple;
    `STRIP_DOVI` checks the Dolby Vision side data is gone; `LUT_APPLY` checks `pix_fmt == yuv420p` (what
-   ffmpeg-skill's LUT path always produces). None of this is "looks graded"; it is what `ffmpeg-skill/probe`
-   measured, checked against what the operation is supposed to have done (STEP 19 of the design brief: deterministic
-   verification, never a subjective "looks cinematic" pass).
+   ffmpeg-skill's LUT path always produces); `PRIMARY_CORRECTION` has no fixed target state (a continuous
+   correction, not a discrete tag) so only the generic checks apply, plus the observed `measurements`. None of this
+   is "looks graded"; it is what `ffmpeg-skill/probe` measured, checked against what the operation is supposed to
+   have done (STEP 19 of the design brief: deterministic verification, never a subjective "looks cinematic" pass).
 7. Materialise every output: the final node's validated artifact is copied (`shutil.copy2`, not another ffmpeg-skill
    call — a colour operation never needs reformatting) to the requested path and re-validated (exists, size,
    sha256 match, video stream, duration/resolution/pix_fmt against `expect`).
@@ -97,8 +103,10 @@ process exit code is `0` iff `ok`, else `errors.EXIT_CODES[code]`.
 
 ## Versioning
 
-- Package / Skill version: `color_grading.VERSION` (`0.1.0`), carried in every document and in every intermediate manifest.
+- Package / Skill version: `color_grading.VERSION` (`0.2.0`), carried in every document and in every intermediate manifest.
 - Document schemas: `color-grading/{contract,request,response,doctor}@1`, versioned independently; within `@1`
   changes are additive only. Renaming an operation type, a parameter, or changing how an operation is realised bumps
   the minor package version (and therefore every operation identity, by design).
-- ffmpeg-skill compatibility window: contract `1.0`, version `[0.9.1, 1.0.0)` (measured; see docs/ffmpeg-skill.md).
+- ffmpeg-skill compatibility window: contract `1.0`, version `[0.9.2, 1.0.0)` (measured; see docs/ffmpeg-skill.md).
+  Raised from `[0.9.1, 1.0.0)` when `PRIMARY_CORRECTION` was added, since it depends on ffmpeg-skill 0.9.2's
+  `--correct` flags.

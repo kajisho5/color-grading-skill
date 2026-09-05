@@ -41,6 +41,7 @@ TOOL_FOR: Dict[str, Tuple[str, List[str]]] = {
     "LUT_APPLY": ("color", ["filter:lut3d", "encoder:libx264"]),
     "RETAG": ("color", []),
     "STRIP_DOVI": ("color", ["bsf:filter_units"]),
+    "PRIMARY_CORRECTION": ("color", ["filter:exposure", "filter:eq", "filter:colorbalance", "filter:colortemperature", "encoder:libx264"]),
 }
 
 
@@ -312,6 +313,10 @@ class Executor:
             return [src, "--retag", p["target"], "-o", o]
         if node.type == "STRIP_DOVI":
             return [src, "--strip-dovi", "-o", o]
+        if node.type == "PRIMARY_CORRECTION":
+            return [src, "--correct", "--exposure", fmt_num(p["exposure"]), "--contrast", fmt_num(p["contrast"]),
+                    "--saturation", fmt_num(p["saturation"]), "--temperature", fmt_num(p["temperature"]), "--tint", fmt_num(p["tint"]),
+                    "--crf", str(p["crf"]), "--preset", p["preset"], "-o", o]
         raise ColorError("INTERNAL_ERROR", f"no argv builder for {node.type}")
 
     @staticmethod
@@ -359,6 +364,8 @@ class Executor:
             run = self.skill.run_tool("color", argv, timeout, cwd=cwd)
             st.seconds += run.seconds
             st.tool_commands += run.commands
+            if isinstance(run.data.get("measurements"), dict):
+                st.measurements = dict(run.data["measurements"])
             st.artifact = self._validate_artifact(out_path, st, source)
         except ColorError:
             self._remove_partial(out_path)
@@ -505,6 +512,8 @@ class Executor:
                      "parameters": s.node.parameters, "input_hash": s.input_hash, "output_hash": s.artifact.sha256 if s.artifact else None}
             if s.lut is not None:
                 entry["lut"] = s.lut.to_dict()
+            if s.measurements:
+                entry["measurements"] = s.measurements
             chain.append(entry)
             stack.extend(self._states.get(i) for i in s.node.inputs if self._states.get(i) is not None)
         return chain

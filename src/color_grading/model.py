@@ -11,12 +11,14 @@ Validation is structural and semantic but never touches the file system: the Pat
 executor do that. Unknown fields are rejected everywhere; fields that could carry a command, a filter string or an
 executable are rejected by name, everywhere in the document.
 
-Every operation here maps 1:1 onto a mode of ffmpeg-skill/color (`--to-sdr`, `--lut`, `--retag`, `--strip-dovi`):
-this skill is a typed front end for that tool's public contract, not a colour-correction engine of its own.
-Exposure / contrast / saturation / temperature / tint / white balance / gamma / lift / gain / levels / curves are
-declared in UNSUPPORTED_OPERATIONS because ffmpeg-skill's public contract has no typed primary colour-correction
-filter for them (docs/ffmpeg-skill.md); they are not implemented here, and they never will be by improvising a raw
-ffmpeg filter string in this package (that would cross the ffmpeg-skill boundary, see docs/architecture.md)."""
+Every operation here maps 1:1 onto a mode of ffmpeg-skill/color (`--to-sdr`, `--lut`, `--retag`, `--strip-dovi`,
+`--correct`): this skill is a typed front end for that tool's public contract, not a colour-correction engine of
+its own. PRIMARY_CORRECTION (ffmpeg-skill >= 0.9.2) covers exposure / contrast / saturation / white balance
+(temperature + tint) as five typed, range-checked parameters, exactly mirroring `color.py --correct`'s own five
+flags and ranges (docs/ffmpeg-skill.md) -- never a raw filter string. White balance as its own operation type,
+gamma, lift, gain, levels and curves remain in UNSUPPORTED_OPERATIONS because ffmpeg-skill's public contract has no
+typed filter for them yet; they are not implemented here, and they never will be by improvising a raw ffmpeg filter
+string in this package (that would cross the ffmpeg-skill boundary, see docs/architecture.md)."""
 from __future__ import annotations
 
 import math
@@ -85,17 +87,24 @@ OPERATION_TYPES: Dict[str, Dict[str, Any]] = {
     "RETAG": {"description": "Rewrite colour tags only, no re-encode when the container allows it (ffmpeg-skill/color --retag)", "parameters": {
         "target": {"type": _STR, "required": True, "enum": list(RETAG_TARGETS), "description": "colour tag set to write"}}},
     "STRIP_DOVI": {"description": "Remove the Dolby Vision RPU (profile 8.4 clips), keeping the HLG/HDR10 base layer; stream copy (ffmpeg-skill/color --strip-dovi)", "parameters": {}},
+    "PRIMARY_CORRECTION": {"description": "Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint) "
+                           "(ffmpeg-skill/color --correct, requires ffmpeg-skill >= 0.9.2); each parameter is one option of one real ffmpeg filter "
+                           "(exposure / eq / colortemperature / colorbalance), range-checked by ffmpeg-skill itself -- never a filter string", "parameters": {
+        "exposure": {"type": _NUM, "required": False, "min": -3.0, "max": 3.0, "default": 0.0, "description": "exposure correction in stops; 0 is unchanged"},
+        "contrast": {"type": _NUM, "required": False, "min": 0.0, "max": 2.0, "default": 1.0, "description": "contrast; 1 is unchanged, 0 is flat grey, 2 is double contrast"},
+        "saturation": {"type": _NUM, "required": False, "min": 0.0, "max": 2.0, "default": 1.0, "description": "saturation; 1 is unchanged, 0 is grayscale, 2 is double saturation"},
+        "temperature": {"type": _NUM, "required": False, "min": 2000.0, "max": 12000.0, "default": 6500.0, "description": "white-balance temperature in Kelvin; 6500 is unchanged"},
+        "tint": {"type": _NUM, "required": False, "min": -1.0, "max": 1.0, "default": 0.0, "description": "green(-1)/magenta(+1) tint; 0 is unchanged"},
+        **_ENCODE_PARAMS}},
 }
 
-# declared, not implemented: ffmpeg-skill's public contract has no typed primary colour-correction filter for these
-# (docs/ffmpeg-skill.md). This skill never adds one by writing a raw ffmpeg filter itself.
+# declared, not implemented: ffmpeg-skill's public contract has no typed filter for these (docs/ffmpeg-skill.md).
+# This skill never adds one by writing a raw ffmpeg filter itself. Exposure / contrast / saturation / temperature /
+# tint moved out of this table in favour of PRIMARY_CORRECTION once ffmpeg-skill 0.9.2 added typed --correct flags
+# for them (docs/decisions.md ADR-15); WHITE_BALANCE stays declared because there is no single "white balance"
+# operation type or flag -- only the two separate PRIMARY_CORRECTION parameters that together achieve it.
 UNSUPPORTED_OPERATIONS: Dict[str, str] = {
-    "EXPOSURE": "ffmpeg-skill exposes no typed exposure filter (no eq gain/brightness control) in its public contract",
-    "CONTRAST": "ffmpeg-skill exposes no typed contrast filter (no eq contrast control) in its public contract",
-    "SATURATION": "ffmpeg-skill exposes no typed saturation filter (no eq saturation control) in its public contract",
-    "TEMPERATURE": "ffmpeg-skill exposes no typed colour-temperature filter (no colortemperature wrapper) in its public contract",
-    "TINT": "ffmpeg-skill exposes no typed tint / colour-balance filter (no colorbalance wrapper) in its public contract",
-    "WHITE_BALANCE": "ffmpeg-skill exposes no typed white-balance filter in its public contract",
+    "WHITE_BALANCE": "no single white-balance operation or flag exists; use PRIMARY_CORRECTION's temperature and tint parameters",
     "GAMMA": "ffmpeg-skill exposes no typed gamma filter (no eq gamma control) in its public contract",
     "LIFT": "ffmpeg-skill exposes no typed lift (shadows) control in its public contract",
     "GAIN": "ffmpeg-skill exposes no typed gain (highlights) control in its public contract; not to be confused with audio-production's audio GAIN operation",
