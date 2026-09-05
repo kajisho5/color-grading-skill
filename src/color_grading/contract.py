@@ -15,6 +15,20 @@ from .model import (CUBE_EXTENSIONS, FORBIDDEN_KEYS, ID_RE, MAX_LUT_BYTES, MAX_O
 
 CONTRACT_SCHEMA_ID = f"{SKILL_ID}/contract@{CONTRACT_SCHEMA_VERSION}"
 
+# Cross-repository Capability ids (kajisho5/AI-video-production-OS docs/SPEC.md
+# `CapabilityContract.provides`), matching the ids already assigned to this Skill's
+# operations in that project's own docs/CAPABILITY_MATRIX.md. Every operation type gets
+# one: this Skill has a single tool (`{SKILL_ID}/run`) and every operation always writes
+# a validated video artifact through it.
+CAPABILITY_IDS: Dict[str, str] = {
+    "HDR_TO_SDR": "color.hdr_to_sdr", "LUT_APPLY": "color.lut_apply", "RETAG": "color.retag", "STRIP_DOVI": "color.strip_dovi",
+}
+
+
+def capability_provides() -> List[Dict[str, str]]:
+    return [{"id": CAPABILITY_IDS[typ], "lifecycle": "EXPERIMENTAL", "tool_id": f"{SKILL_ID}/run", "operation": typ}
+            for typ in sorted(OPERATION_TYPES)]
+
 
 def _param_schema(ps: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in ps.items() if k in ("type", "required", "min", "max", "enum", "default", "description")}
@@ -51,6 +65,7 @@ def skill_contract() -> Dict[str, Any]:
                          "image understanding", "scene/face detection", "primary colour correction (exposure/contrast/saturation/white balance/gamma/lift/gain/levels/curves)",
                          "container/format conversion (ffmpeg-skill/export)", "arbitrary ffmpeg filters", "shell execution", "network access"],
         "tools": tools,
+        "provides": capability_provides(),
         "operations": operation_specs(),
         "unsupported_operations": [{"type": t, "status": "not_implemented", "reason": r} for t, r in UNSUPPORTED_OPERATIONS.items()],
         "output_formats": {f: {"extension": s["extension"], "note": "must match the source container; this skill does not convert containers"} for f, s in OUTPUT_FORMATS.items()},

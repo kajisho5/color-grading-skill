@@ -212,6 +212,14 @@ are no placeholder operations. `doctor` reports every capability (`ffmpeg-skill`
 `filter:<name>`, `encoder:<name>`, `bsf:<name>`) as `supported`, `unsupported` or `unknown` — an installed capability
 is never reported absent, and a failed detection is never silently read as a pass.
 
+`provides` lists this Skill's four operations by their cross-repository Capability id (`color.hdr_to_sdr`,
+`color.lut_apply`, `color.retag`, `color.strip_dovi`), each with the `operation` it maps to, its `tool_id` (always
+`color-grading/run`, since this Skill exposes one execution tool), and a `lifecycle`. This is a different vocabulary
+from the `doctor`/`capabilities` one above (environment/binary detection, e.g. `ffmpeg`, `filter:<name>`): `provides`
+is for `kajisho5/AI-video-production-OS`'s `CapabilityContract.provides` (see that project's `docs/SPEC.md`), so a
+registry can resolve "who provides `color.hdr_to_sdr`" without hardcoding this repository. It is additive and
+derived from `model.OPERATION_TYPES`; see `docs/decisions.md` ADR-15.
+
 ### CLI
 
 | command | reads media | writes media |

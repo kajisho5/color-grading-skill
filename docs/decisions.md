@@ -67,3 +67,13 @@
   no drive letter, nothing to escape, on any drive layout. This changes only what this skill hands to `--lut` and
   which directory the subprocess starts in, not anything in ffmpeg-skill, and is inert on POSIX (a bare name in
   the process's own directory was already unambiguous there).
+- **ADR-15 `provides`: publish this Skill's four operations as cross-repository Capability ids.** Added for
+  `kajisho5/AI-video-production-OS`'s `CapabilityContract.provides` (`docs/SPEC.md` there), so a registry can
+  resolve "who provides `color.hdr_to_sdr`" without hardcoding this repository. `model.OPERATION_TYPES` has no
+  native capability-shaped id of its own, so the id per operation type is a new naming decision, not a mechanical
+  derivation — it matches the ids already assigned in that project's own `docs/CAPABILITY_MATRIX.md`, kept here in
+  `contract.CAPABILITY_IDS` as the single source of truth going forward: `HDR_TO_SDR` → `color.hdr_to_sdr`,
+  `LUT_APPLY` → `color.lut_apply`, `RETAG` → `color.retag`, `STRIP_DOVI` → `color.strip_dovi`. Every operation type
+  gets an id: this Skill has a single tool (`{SKILL_ID}/run`) and every operation always writes a validated video
+  artifact through it. Additive: a new top-level `provides` key derived from `OPERATION_TYPES`, saying nothing
+  `operations[]` doesn't already say, only indexed by Capability id instead of operation type.
