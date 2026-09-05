@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="Color Grading Skill: deterministic colour execution for AI agents" width="760">
+</p>
+
 <h1 align="center">color-grading-skill</h1>
 
 <p align="center"><strong>Deterministic colour grading execution for AI video agents.</strong></p>
