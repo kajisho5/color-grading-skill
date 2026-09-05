@@ -314,22 +314,24 @@ class Executor:
             return [src, "--strip-dovi", "-o", o]
         raise ColorError("INTERNAL_ERROR", f"no argv builder for {node.type}")
 
-    def _lut_arg(self, lut_path: Path) -> str:
-        """The value passed to ffmpeg-skill's --lut. Prefer a path relative to the ffmpeg-skill subprocess's own
-        working directory (the ffmpeg-skill checkout, set as `cwd` in adapter._popen) over the absolute path.
+    @staticmethod
+    def _lut_arg(lut_path: Path) -> str:
+        """The value passed to ffmpeg-skill's --lut: always just the LUT's own file name. `_execute_node` runs
+        this call with `cwd` set to `lut_path.parent`, so the bare name is the whole path the subprocess needs --
+        never a drive letter, never a colon, regardless of what drive the LUT happens to live on relative to the
+        ffmpeg-skill checkout or the workspace.
 
-        Measured: ffmpeg-skill's own `escape_filter_path` backslash-escapes a Windows drive-letter colon for the
-        `-vf lut3d=file=...` filter graph value (`C:\\...` -> `C\\:/...`), and at least one Windows ffmpeg build
-        (gyan.dev 9.0.1 essentials, Windows Server 2025) rejects that escaping in a filter *option* value with
-        "No option name near ..." -- an absolute Windows LUT path then breaks LUT_APPLY outright. A path with no
-        drive letter has no colon to escape and sidesteps the bug entirely; this is unrelated to ffmpeg-skill's
-        own code (nothing there is changed) and works identically on POSIX. A LUT on a different Windows drive
-        than the ffmpeg-skill checkout cannot be expressed as a relative path, so that case keeps the absolute
-        path and keeps the known limitation (docs/ffmpeg-skill.md)."""
-        try:
-            return os.path.relpath(str(lut_path), start=str(self.skill.directory))
-        except ValueError:
-            return str(lut_path)
+        Measured reason this matters: ffmpeg-skill's own `escape_filter_path` backslash-escapes a Windows
+        drive-letter colon for the `-vf lut3d=file=...` filter graph value (`C:\\...` -> `C\\:/...`), and at least
+        one Windows ffmpeg build (gyan.dev 9.0.1 essentials, Windows Server 2025) rejects that escaping in a filter
+        *option* value with "No option name near ..." -- an absolute Windows LUT path breaks LUT_APPLY outright.
+        A relative-to-ffmpeg-skill's-own-directory path was tried first and still fails on GitHub Actions Windows
+        runners specifically, because the repository checkout and the OS temp directory (where a workspace under
+        pytest's tmp_path, or any caller's own temp workspace, typically lives) are on *different drives* there --
+        no relative path can cross a Windows drive at all. Running the subprocess with `cwd` at the LUT's own
+        directory has no such limitation: this is unrelated to ffmpeg-skill's own code (nothing there is changed)
+        and is inert on POSIX (a bare file name in the process's own directory was already unambiguous there)."""
+        return lut_path.name
 
     def _artifact_path(self, st: NodeState) -> str:
         if st.artifact is None:
@@ -351,7 +353,10 @@ class Executor:
                 stale.unlink()
         try:
             argv = self._argv(st, self._artifact_path(upstream), out_path)
-            run = self.skill.run_tool("color", argv, timeout)
+            # LUT_APPLY runs with cwd at the LUT's own directory so --lut can be a bare file name (see _lut_arg):
+            # no drive letter, no colon, regardless of what drive the LUT/workspace/ffmpeg-skill checkout are on
+            cwd = str(st.lut.path.parent) if st.lut is not None else None
+            run = self.skill.run_tool("color", argv, timeout, cwd=cwd)
             st.seconds += run.seconds
             st.tool_commands += run.commands
             st.artifact = self._validate_artifact(out_path, st, source)

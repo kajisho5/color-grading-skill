@@ -199,19 +199,18 @@ def test_argv_builder_uses_only_fixed_flags_numbers_enums_and_resolved_paths(wor
 
     flag_or_enum = re.compile(r"^(--[a-z-]+|-o|hable|mobius|reinhard|bt2390|clip|linear|gamma|bt709|bt2020-pq|bt2020-hlg|bt601|ultrafast|superfast|veryfast|faster|fast|medium|slow|slower|veryslow|placebo|\d+)$")
     num = re.compile(r"^-?\d+\.\d{4}$")
-    # the --lut value is deliberately a path relative to the ffmpeg-skill subprocess's own cwd when possible
-    # (executor._lut_arg: no drive-letter colon to escape, sidesteps a Windows ffmpeg filter-parser defect); it must
-    # still resolve, from that cwd, to exactly the resolved LUT file -- never a raw, unvalidated request string
-    safe_path = re.compile(r"^[^;&|$`\n\x00]+$")
+    # the --lut value is deliberately just the LUT's bare file name (executor._lut_arg); executor._execute_node
+    # runs that call with cwd at the LUT's own directory, so no drive letter or colon ever needs escaping,
+    # regardless of what drive the LUT/workspace/ffmpeg-skill checkout are on (a Windows ffmpeg filter-parser
+    # defect measured against an absolute path, docs/ffmpeg-skill.md) -- never a raw, unvalidated request string
+    bare_name = re.compile(r"^[^/\\;&|$`\n\x00]+$")
 
     for st, src_path in ((hdr_st, src), (lut_st, src), (retag_st, src), (dovi_st, src)):
         argv = ex._argv(st, src_path, out)
         for a in argv:
-            assert flag_or_enum.match(a) or num.match(a) or os.path.isabs(a) or safe_path.match(a), (st.node.type, a)
+            assert flag_or_enum.match(a) or num.match(a) or os.path.isabs(a) or bare_name.match(a), (st.node.type, a)
 
     assert ex._argv(hdr_st, src, out) == [src, "--to-sdr", "--tonemap", "hable", "--peak", "1000.0000", "--desat", "0.0000", "--force", "--crf", "18", "--preset", "medium", "-o", str(out)]
-    lut_argv = ex._argv(lut_st, src, out)
-    assert lut_argv[:2] == [src, "--lut"] and lut_argv[3:] == ["--lut-strength", "0.7500", "--crf", "20", "--preset", "slow", "-o", str(out)]
-    assert (Path(ex.skill.directory) / lut_argv[2]).resolve() == Path(lut_path).resolve()
+    assert ex._argv(lut_st, src, out) == [src, "--lut", "invert.cube", "--lut-strength", "0.7500", "--crf", "20", "--preset", "slow", "-o", str(out)]
     assert ex._argv(retag_st, src, out) == [src, "--retag", "bt601", "-o", str(out)]
     assert ex._argv(dovi_st, src, out) == [src, "--strip-dovi", "-o", str(out)]

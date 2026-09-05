@@ -306,10 +306,6 @@ test exercises the operation and its "no Dolby Vision side data present" check, 
 - No cache eviction: the work directory grows until the caller removes `<workspace>/.color-grading/<project_id>/`.
 - Primary colour correction (exposure, contrast, saturation, white balance, temperature, tint, gamma, lift, gain,
   levels, curves) is not implemented: ffmpeg-skill has no typed filter for it yet (docs/ffmpeg-skill.md).
-- `LUT_APPLY` on Windows, when the LUT and the ffmpeg-skill checkout are on *different* drives: ffmpeg-skill's own
-  LUT-path escaping is rejected by at least one Windows ffmpeg build's filter-option parser (measured; docs/
-  ffmpeg-skill.md), and a cross-drive path cannot be made relative to sidestep it the way this skill does for the
-  common (same-drive) case — that narrow case keeps ffmpeg-skill's limitation.
 
 ## Future extensions (not in this release)
 

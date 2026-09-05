@@ -78,12 +78,15 @@ convention audio-production-skill uses for its own dependency.
   parser (`No option name near '...invert.cube:interp=tetrahedral'`, `Error parsing filterchain ...`), so an
   absolute Windows LUT path made `--lut` fail outright — not a corrupted result, a hard failure ffmpeg-skill itself
   reports (`kind: ffmpeg`), which this skill's adapter turns into `TOOL_ERROR`. Since only the drive letter's colon
-  triggers the bug, this skill sidesteps it entirely from its own side, without touching ffmpeg-skill: `executor.
-  Executor._lut_arg` passes a LUT path relative to the ffmpeg-skill subprocess's own working directory (the
-  checkout, set as `cwd` in `adapter._popen`) whenever the LUT and the checkout are on the same drive — no drive
-  letter, no colon, nothing for `escape_filter_path` to (mis)escape. A LUT on a *different* Windows drive than the
-  ffmpeg-skill checkout cannot be expressed as a relative path (`os.path.relpath` raises `ValueError` there); that
-  narrow case falls back to the absolute path and keeps the limitation above (README's Current limitations).
+  triggers the bug, this skill sidesteps it entirely from its own side, without touching ffmpeg-skill:
+  `executor._execute_node` runs the `ffmpeg-skill/color` subprocess for `LUT_APPLY` with `cwd` set to the LUT
+  file's own directory (`adapter.run_tool`/`_popen` take an optional `cwd` override for this, defaulting to the
+  ffmpeg-skill checkout as before for every other call) and `executor._lut_arg` passes just the LUT's bare file
+  name as `--lut` — no drive letter, no colon, nothing for `escape_filter_path` to (mis)escape, regardless of what
+  drive the LUT, the caller's workspace and the ffmpeg-skill checkout each happen to be on. (A relative-path
+  attempt was tried first and was not enough: GitHub Actions Windows runners put the repository checkout and the
+  OS temp directory — where a caller's own workspace typically lives — on different drives, and no relative path
+  can cross a Windows drive at all.)
 
 ## Compatibility gaps (required capability → not implemented here)
 

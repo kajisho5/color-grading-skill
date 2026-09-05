@@ -58,8 +58,12 @@
 - **ADR-14 A Windows-only ffmpeg-skill defect is worked around from this skill's own side, never by editing
   ffmpeg-skill.** Measured on Windows CI (docs/ffmpeg-skill.md): an absolute Windows LUT path's drive-letter colon,
   once escaped by ffmpeg-skill's own `escape_filter_path` for the `-vf lut3d=file=...` value, is rejected by at
-  least one Windows ffmpeg build's filter-option parser, making `LUT_APPLY` fail outright. `executor._lut_arg`
-  passes a path relative to the ffmpeg-skill subprocess's own working directory instead of an absolute one whenever
-  possible (no drive letter, nothing to escape); this changes only what this skill hands to `--lut`, not anything
-  in ffmpeg-skill, and is inert on POSIX (a relative path there was already unambiguous). A LUT on a different
-  Windows drive than the ffmpeg-skill checkout cannot be made relative and keeps the original limitation.
+  least one Windows ffmpeg build's filter-option parser, making `LUT_APPLY` fail outright. A first attempt made the
+  `--lut` value relative to the ffmpeg-skill subprocess's own working directory; measured as not enough, because
+  GitHub Actions Windows runners put the repository checkout and the OS temp directory (where a workspace under a
+  caller's own temp directory typically lives) on different drives, and no relative path can cross a Windows drive.
+  The adapter now accepts an per-call `cwd` override (`adapter.run_tool`/`_popen`), and `executor._execute_node`
+  runs `LUT_APPLY` with `cwd` at the LUT's own directory, so `executor._lut_arg` can pass just the bare file name —
+  no drive letter, nothing to escape, on any drive layout. This changes only what this skill hands to `--lut` and
+  which directory the subprocess starts in, not anything in ffmpeg-skill, and is inert on POSIX (a bare name in
+  the process's own directory was already unambiguous there).
