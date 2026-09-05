@@ -21,6 +21,12 @@ def run(doc, *extra):
     return code, d
 
 
+def full_error(d):
+    """Full, untruncated error detail (pytest's default assertion repr truncates long strings, which hides the
+    ffmpeg-skill stderr tail needed to diagnose a platform-specific tool failure)."""
+    return "\n" + json.dumps(d.get("error"), indent=2, ensure_ascii=False)
+
+
 def probe(path):
     r = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)], capture_output=True, text=True, check=True)
     d = json.loads(r.stdout)
@@ -71,7 +77,7 @@ def test_lut_apply_with_deterministic_pixel_check(workspace):
     src_color = sample_avg_color(workspace / "sdr.mp4")
     doc = request_doc([op("l", "LUT_APPLY", "source", lut_path="invert.cube", lut_strength=1.0)])
     code, d = run(doc)
-    assert code == 0 and d["ok"], d.get("error")
+    assert code == 0 and d["ok"], full_error(d)
     out = workspace / "out" / "main.mp4"
     p = probe(out)
     assert p["pix_fmt"] == "yuv420p"
@@ -142,7 +148,7 @@ def test_chained_pipeline_hdr_to_sdr_then_lut(workspace, capabilities):
         pytest.skip("filter:zscale not available in this ffmpeg build (needs libzimg; e.g. macOS Homebrew's plain 'ffmpeg' formula omits it)")
     doc = request_doc([op("s", "HDR_TO_SDR", "source"), op("l", "LUT_APPLY", "op:s", lut_path="invert.cube")], source={"source_id": "a", "path": "hdr.mp4"})
     code, d = run(doc)
-    assert code == 0 and d["ok"], d.get("error")
+    assert code == 0 and d["ok"], full_error(d)
     p = probe(workspace / "out" / "main.mp4")
     assert p["pix_fmt"] == "yuv420p" and abs(p["duration"] - 2.0) < 0.2
     assert [r["status"] for r in d["results"] if r["type"] != "SOURCE"] == ["completed", "completed"]
@@ -174,7 +180,7 @@ def test_rerun_reuses_intermediates_and_is_deterministic(workspace):
                       outputs=[{"output_id": "main", "operation": "op:l", "path": "out/main.mp4", "format": "mp4", "overwrite": True}])
     code, d1 = run(doc)
     code, d2 = run(doc)
-    assert d1["ok"] and d2["ok"], (d1.get("error"), d2.get("error"))
+    assert d1["ok"] and d2["ok"], full_error(d1) + full_error(d2)
     assert [r["status"] for r in d2["results"] if r["type"] != "SOURCE"] == ["reused", "reused"]
     assert [r["operation_id"] for r in d1["results"]] == [r["operation_id"] for r in d2["results"]]
     assert d1["outputs"][0]["artifact"]["sha256"] == d2["outputs"][0]["artifact"]["sha256"]
