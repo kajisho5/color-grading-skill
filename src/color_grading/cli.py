@@ -156,6 +156,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                 doc = _error_document(ColorError("CANCELLED", "interrupted", {"reason": "signal"}), dry_run)
     except ColorError as e:
         doc = _error_document(e, dry_run)
+    except Exception as e:
+        # Any exception this skill did not itself raise as a ColorError (e.g. a pathologically nested request
+        # document overflowing json.loads' recursion limit) must still not break the one-JSON-document-on-stdout
+        # contract every caller relies on; report it as an internal bug rather than letting main() propagate a
+        # bare Python traceback that the caller cannot parse.
+        doc = _error_document(ColorError("INTERNAL_ERROR", f"unexpected error ({type(e).__name__}): {e}"), dry_run)
     _emit(doc, as_json)
     if doc.get("ok"):
         return 0
