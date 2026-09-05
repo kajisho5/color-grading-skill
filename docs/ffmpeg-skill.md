@@ -71,6 +71,19 @@ convention audio-production-skill uses for its own dependency.
   `color_primaries` is `bt2020`, or Dolby Vision side data is present; `video.dolby_vision` is `null` or a dict with
   `profile`/`level`/`bl_compatibility_id`. This skill's `HDR_TO_SDR` / `STRIP_DOVI` validation reads exactly these
   two fields, never re-derives HDR-ness from raw tags itself.
+- **`--lut` and a Windows drive-letter path.** `color.py` builds `lut3d=file=<escape_filter_path(args.lut)>:interp=
+  tetrahedral` for the `-vf` filter graph. `escape_filter_path` backslash-escapes a colon (`C:\...` → `C\:/...`) so
+  the graph-level parser does not treat it as a filter separator. **Measured** on a Windows CI runner (gyan.dev
+  ffmpeg 9.0.1 essentials, Windows Server 2025): that escaping is rejected by this build's filter-*option* value
+  parser (`No option name near '...invert.cube:interp=tetrahedral'`, `Error parsing filterchain ...`), so an
+  absolute Windows LUT path made `--lut` fail outright — not a corrupted result, a hard failure ffmpeg-skill itself
+  reports (`kind: ffmpeg`), which this skill's adapter turns into `TOOL_ERROR`. Since only the drive letter's colon
+  triggers the bug, this skill sidesteps it entirely from its own side, without touching ffmpeg-skill: `executor.
+  Executor._lut_arg` passes a LUT path relative to the ffmpeg-skill subprocess's own working directory (the
+  checkout, set as `cwd` in `adapter._popen`) whenever the LUT and the checkout are on the same drive — no drive
+  letter, no colon, nothing for `escape_filter_path` to (mis)escape. A LUT on a *different* Windows drive than the
+  ffmpeg-skill checkout cannot be expressed as a relative path (`os.path.relpath` raises `ValueError` there); that
+  narrow case falls back to the absolute path and keeps the limitation above (README's Current limitations).
 
 ## Compatibility gaps (required capability → not implemented here)
 

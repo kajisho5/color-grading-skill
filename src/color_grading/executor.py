@@ -306,13 +306,30 @@ class Executor:
             return args
         if node.type == "LUT_APPLY":
             assert st.lut is not None
-            args = [src, "--lut", str(st.lut.path), "--lut-strength", fmt_num(p["lut_strength"]), "--crf", str(p["crf"]), "--preset", p["preset"], "-o", o]
+            args = [src, "--lut", self._lut_arg(st.lut.path), "--lut-strength", fmt_num(p["lut_strength"]), "--crf", str(p["crf"]), "--preset", p["preset"], "-o", o]
             return args
         if node.type == "RETAG":
             return [src, "--retag", p["target"], "-o", o]
         if node.type == "STRIP_DOVI":
             return [src, "--strip-dovi", "-o", o]
         raise ColorError("INTERNAL_ERROR", f"no argv builder for {node.type}")
+
+    def _lut_arg(self, lut_path: Path) -> str:
+        """The value passed to ffmpeg-skill's --lut. Prefer a path relative to the ffmpeg-skill subprocess's own
+        working directory (the ffmpeg-skill checkout, set as `cwd` in adapter._popen) over the absolute path.
+
+        Measured: ffmpeg-skill's own `escape_filter_path` backslash-escapes a Windows drive-letter colon for the
+        `-vf lut3d=file=...` filter graph value (`C:\\...` -> `C\\:/...`), and at least one Windows ffmpeg build
+        (gyan.dev 9.0.1 essentials, Windows Server 2025) rejects that escaping in a filter *option* value with
+        "No option name near ..." -- an absolute Windows LUT path then breaks LUT_APPLY outright. A path with no
+        drive letter has no colon to escape and sidesteps the bug entirely; this is unrelated to ffmpeg-skill's
+        own code (nothing there is changed) and works identically on POSIX. A LUT on a different Windows drive
+        than the ffmpeg-skill checkout cannot be expressed as a relative path, so that case keeps the absolute
+        path and keeps the known limitation (docs/ffmpeg-skill.md)."""
+        try:
+            return os.path.relpath(str(lut_path), start=str(self.skill.directory))
+        except ValueError:
+            return str(lut_path)
 
     def _artifact_path(self, st: NodeState) -> str:
         if st.artifact is None:
