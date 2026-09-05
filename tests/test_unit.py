@@ -192,6 +192,33 @@ def test_preset_enum_rejects_unknown():
         validate_parameters("HDR_TO_SDR", {"preset": "turbo"}, "x")
 
 
+def test_primary_correction_defaults_are_identity():
+    p = validate_parameters("PRIMARY_CORRECTION", {}, "x")
+    assert p == {"exposure": 0.0, "contrast": 1.0, "saturation": 1.0, "temperature": 6500.0, "tint": 0.0, "crf": 18, "preset": "medium"}
+
+
+@pytest.mark.parametrize("name,bad", [("exposure", -3.01), ("exposure", 3.01), ("contrast", -0.01), ("contrast", 2.01),
+                                       ("saturation", -0.01), ("saturation", 2.01), ("temperature", 1999.0), ("temperature", 12001.0),
+                                       ("tint", -1.01), ("tint", 1.01)])
+def test_primary_correction_out_of_safe_range_rejected(name, bad):
+    with pytest.raises(ColorError) as e:
+        validate_parameters("PRIMARY_CORRECTION", {name: bad}, "x")
+    assert e.value.code == "INVALID_REQUEST"
+
+
+@pytest.mark.parametrize("name,edge", [("exposure", -3.0), ("exposure", 3.0), ("contrast", 0.0), ("contrast", 2.0),
+                                        ("saturation", 0.0), ("saturation", 2.0), ("temperature", 2000.0), ("temperature", 12000.0),
+                                        ("tint", -1.0), ("tint", 1.0)])
+def test_primary_correction_range_boundaries_accepted(name, edge):
+    p = validate_parameters("PRIMARY_CORRECTION", {name: edge}, "x")
+    assert p[name] == edge
+
+
+def test_primary_correction_is_not_in_unsupported_operations():
+    assert "PRIMARY_CORRECTION" not in UNSUPPORTED_OPERATIONS
+    assert "PRIMARY_CORRECTION" in OPERATION_TYPES
+
+
 def test_retag_tags_have_four_entries_matching_targets():
     from color_grading.model import RETAG_TARGETS
     assert set(RETAG_TAGS) == set(RETAG_TARGETS)
@@ -251,6 +278,18 @@ def test_graph_identities_deterministic_and_depend_on_parameters():
     ops4 = [ColorOperation("different-label", "RETAG", "source", {"target": "bt709"})]
     ids4 = OperationGraph(_project(ops4, outputs=[ColorOutput("o1", "op:different-label", "out.mp4", "mp4")])).identities("deadbeef", {"ffmpeg-skill": "0.9.1"})
     assert ids4["op:different-label"] == ids1["op:a"]
+
+
+def test_graph_identities_depend_on_primary_correction_parameters():
+    params = {"exposure": 0.5, "contrast": 1.0, "saturation": 1.0, "temperature": 6500.0, "tint": 0.0, "crf": 18, "preset": "medium"}
+    ops = [ColorOperation("a", "PRIMARY_CORRECTION", "source", dict(params))]
+    ids1 = OperationGraph(_project(ops)).identities("deadbeef", {"ffmpeg-skill": "0.9.2"})
+    ops2 = [ColorOperation("a", "PRIMARY_CORRECTION", "source", {**params, "exposure": 0.6})]
+    ids2 = OperationGraph(_project(ops2)).identities("deadbeef", {"ffmpeg-skill": "0.9.2"})
+    assert ids1["op:a"] != ids2["op:a"]
+    ops3 = [ColorOperation("a", "PRIMARY_CORRECTION", "source", dict(params))]
+    ids3 = OperationGraph(_project(ops3)).identities("deadbeef", {"ffmpeg-skill": "0.9.2"})
+    assert ids1["op:a"] == ids3["op:a"]
 
 
 def test_graph_identity_source_depends_on_fingerprint_only():

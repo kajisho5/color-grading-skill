@@ -9,7 +9,7 @@ fixtures and for ffmpeg-skill) and an ffmpeg-skill checkout (`COLOR_GRADING_FFMP
 | `tests/test_unit.py` | request schema (every operation's parameters, arity, references, forbidden fields), graph (order, cycles, unreachable, LUT content-hash identity override, determinism), canonical JSON, error table, file-name rules, path policy (input / LUT roots independent), symlink escapes, Windows names |
 | `tests/test_security.py` | no shell in source, script allow-list (`probe.py`/`color.py` only), argv formatting (`fmt_num`), parameter injection through every operation's parameters, unsafe output paths / roots / symlinks through the CLI, LUT path policy separate from input path policy, input overwrite, existing output, malformed JSON, command/argv fields anywhere in the document, ffmpeg-skill directory handling, minimal environment, argv builder audit (every value is a fixed flag / formatted number / validated enum / absolute path) |
 | `tests/test_contract.py` | contract ⇔ implementation, `skill` = `contract`, doctor statuses (`supported` / `unsupported` / `unknown`), doctor without ffmpeg-skill, capability table |
-| `tests/test_integration.py` | per operation positive + negative (`HDR_TO_SDR` incl. non-HDR source refusal and `force`, `LUT_APPLY` incl. wrong extension / oversized / outside allowed roots, `RETAG` for all four targets, `STRIP_DOVI` on HEVC and its refusal on H.264), a chained pipeline `HDR_TO_SDR → LUT_APPLY`, dry run writes nothing, re-run reuse + `--no-reuse` + tampered intermediate, invalid inputs (no video stream, corrupt file), output container mismatch, missing output, expectation failure removes the output, timeout, SIGINT cancellation, CLI validate / exit codes / human output, one deterministic pixel-level LUT check |
+| `tests/test_integration.py` | per operation positive + negative (`HDR_TO_SDR` incl. non-HDR source refusal and `force`, `LUT_APPLY` incl. wrong extension / oversized / outside allowed roots, `RETAG` for all four targets, `STRIP_DOVI` on HEVC and its refusal on H.264, `PRIMARY_CORRECTION` incl. defaults-are-near-identity, deterministic desaturation, out-of-range rejection and observed `measurements`), chained pipelines `HDR_TO_SDR → LUT_APPLY` and `PRIMARY_CORRECTION → LUT_APPLY`, dry run writes nothing, re-run reuse + `--no-reuse` + tampered intermediate, invalid inputs (no video stream, corrupt file), output container mismatch, missing output, expectation failure removes the output, timeout, SIGINT cancellation, CLI validate / exit codes / human output, deterministic pixel-level checks for `LUT_APPLY` and `PRIMARY_CORRECTION` |
 
 Fixtures (`tests/fixtures/generate.py`) are synthesised with ffmpeg at test time: a 3 s 160×90 SDR H.264+AAC clip
 (solid colour), a 2 s SDR H.264 clip with no audio, a 2 s SDR HEVC clip (no Dolby Vision side data), a 2 s HEVC
@@ -37,5 +37,15 @@ input` exactly at every point in the cube, so the resulting colour shift is dete
   RPU is stripped — only that the operation runs end-to-end on an HEVC input and the output is validated the same
   way a real Dolby Vision source's output would be. `STRIP_DOVI` on a non-HEVC (H.264) source is tested as the
   negative case ffmpeg-skill itself enforces (`TOOL_ERROR`).
+- **`PRIMARY_CORRECTION`**: run against the solid-colour fixture. All-default parameters (an intended no-op) leaves
+  the sampled average colour within a documented tolerance of the input (chained-filter rounding plus the x264
+  re-encode itself cost a few levels even at identity, which is real, measured drift, not a colour shift);
+  `saturation=0.0` is checked as a deterministic, measurable transform (near-equal sampled R/G/B — grayscale is a
+  mathematical fact about the output, not a "look"); an out-of-range parameter (e.g. `exposure=10.0`) is rejected
+  with `INVALID_REQUEST` before any tool runs. ffmpeg-skill's own before/after `measurements`
+  (signalstats-based, real numbers) are asserted present on both `results[].measurements` and the matching
+  provenance chain entry, and are asserted to differ between input and output for a parameter combination that
+  measurably changes the image — this is the "observed, not judged" requirement verified end to end, not merely
+  unit-tested against a mocked tool response.
 
 Static checks used in development: `python -m pyflakes src tests`, `python -m compileall src tests`.
