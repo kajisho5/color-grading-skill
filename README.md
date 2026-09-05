@@ -1,95 +1,74 @@
-# color-grading-skill
+<h1 align="center">color-grading-skill</h1>
 
-Deterministic colour grading / colour correction **execution** Skill for the AI Video Production Ecosystem:
-HDR (PQ/HLG, BT.2020) to SDR BT.709 tone mapping with an explicit curve, application of a 3D `.cube` LUT, colour-tag
-retagging (BT.709 / BT.2020 PQ / BT.2020 HLG / BT.601) without a re-encode where possible, and Dolby Vision RPU
-removal, executed as a typed **operation graph** through [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill),
-with validated artifacts and provenance out.
+<p align="center"><strong>Deterministic colour grading execution for AI video agents.</strong></p>
 
-**color-grading-skill is NOT an AI agent.** It contains no LLM, no prompt, no reasoning, no decision, no automatic
-look or LUT selection, no "does this look cinematic" judgement. It executes what a typed request says, refuses
-everything else, and reports what it observed.
+<p align="center">
+  Typed operations · Validated artifacts · Full provenance<br>
+  Part of the AI Video Production Ecosystem · built on <a href="https://github.com/kajisho5/ffmpeg-skill">ffmpeg-skill</a>
+</p>
 
-```text
-color-grading skill --json              # Skill / Capability / Tool contract (alias: contract --json)
-color-grading doctor --json             # environment vs. contract: ffmpeg-skill, ffmpeg, capabilities per operation
-color-grading validate - --json         # validate a request document, run nothing, read no media
-color-grading plan - --json             # dry run: graph, tool selection, expected geometry; writes no media
-color-grading run - --json              # execute (stdin: request document; stdout: exactly one response document)
+<p align="center">
+  <a href="https://github.com/kajisho5/color-grading-skill/actions/workflows/tests.yml"><img src="https://github.com/kajisho5/color-grading-skill/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
+  <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/ffmpeg--skill-0.9.1%2B-orange" alt="ffmpeg-skill 0.9.1+">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
+</p>
+
+```bash
+git clone https://github.com/kajisho5/color-grading-skill && cd color-grading-skill && pip install -e .
 ```
 
-Requirements: Python 3.9+, standard library only; an **ffmpeg-skill** checkout (0.9.1 ≤ version < 1.0, contract 1.0)
-and FFmpeg (`ffmpeg` + `ffprobe`) on PATH for ffmpeg-skill. Install: `pip install -e .`
+`color-grading-skill` executes colour operations that an AI agent has already decided on — HDR → SDR tone mapping,
+3D LUT application, colour-tag retagging, Dolby Vision RPU removal — as a typed, deterministic operation graph on
+top of [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill), with every output re-probed and validated and every
+result carrying full provenance.
+
+**It does not decide anything.** No LLM, no prompt, no reasoning, no automatic LUT or "look" selection, no judging
+whether a frame looks cinematic. It takes a typed request, executes exactly what it says, refuses everything else,
+and reports what it observed.
+
+---
+
+**Contents**
+[What it does](#what-it-is-and-what-it-is-not) · [Quick start](#quick-start) · [How it works](#how-it-works) ·
+[Supported operations](#supported-operations) · [Deterministic execution](#deterministic-execution) ·
+[Artifact validation](#artifact-validation) · [Provenance](#provenance) · [Security](#security) ·
+[Built for agents](#built-for-agents) · [Errors](#error-handling) · [Limitations](#current-limitations) ·
+[Testing](#testing) · [Docs](#docs) · [Ecosystem](#relationship-to-the-other-skills) · [Support](#support)
+
+---
 
 ## What it is, and what it is not
 
-| | [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) | [media-analysis-skill](https://github.com/kajisho5/media-analysis-skill) | **color-grading-skill** | [video-production-agent](https://github.com/kajisho5/video-production-agent) |
-|---|---|---|---|---|
-| Role | low-level media execution engine (hands) | measurement / observation (meters) | **colour grading execution** (typed colour operations) | reasoning / decision / planning / orchestration (brain) |
-| Does | runs ffmpeg for colour (`color.py --to-sdr/--lut/--retag/--strip-dovi`), cut, audio, export, … | measures loudness, silence, streams, integrity | executes HDR_TO_SDR / LUT_APPLY / RETAG / STRIP_DOVI as a dependency graph, validates every artifact (measured colour tags, not assumed), records provenance | decides *whether* and *which* colour treatment, LUT or tonemap curve to apply, builds the request |
-| Never | holds a project model | edits or writes media | decides which LUT/look/curve to use, looks at a frame and judges it, performs primary colour correction (exposure/contrast/saturation/white balance/gamma/lift/gain/levels/curves — ffmpeg-skill has no typed filter for these yet), converts containers, runs ffmpeg directly, accepts commands / filters | runs ffmpeg |
+| | |
+|---|---|
+| **Does** | execute `HDR_TO_SDR`, `LUT_APPLY`, `RETAG`, `STRIP_DOVI` as a dependency graph; validate every artifact by re-probing it (measured colour tags, never assumed); reuse intermediates by content-addressed identity; record full provenance |
+| **Does not** | decide *which* colour treatment, LUT or tonemap curve to apply; look at a frame and judge it "cinematic"; perform primary colour correction (exposure, contrast, saturation, white balance, temperature, tint, gamma, lift, gain, levels, curves — see [Limitations](#current-limitations)); convert containers; run `ffmpeg` directly; accept a command, argv or filter string from the caller |
 
-- **color-grading-skill ≠ media-analysis-skill.** Neither package measures *for a decision* here: colour metadata
-  (`color_space`, `color_primaries`, `color_transfer`, `hdr`, `dolby_vision`) is read only to validate that an
-  operation had its intended, measurable effect (STEP 4/19 of the design brief keep measurement and transformation
-  separate: "input is BT.709" is a fact, "convert to BT.709" is an operation).
-- **color-grading-skill ≠ ffmpeg-skill.** ffmpeg-skill runs FFmpeg per script call. color-grading-skill owns the
-  *colour project model*: one source, an operation graph with deterministic identities, LUT resolution and hashing,
-  intermediate management, output validation and provenance. It never calls `ffmpeg` itself: every process it
-  starts is `python3 <ffmpeg-skill>/scripts/{probe,color}.py` with a typed argv.
-- **color-grading-skill ≠ video-production-agent.** There is no Observation → Inference → Decision → ProductionPlan
-  here. The agent decides which LUT, which tonemap curve, which retag target; this skill executes one typed
-  request and says exactly what happened.
+That split is the whole design: **[video-production-agent](https://github.com/kajisho5/video-production-agent)**
+decides *what* to do and builds the request; **color-grading-skill** decides *how* to execute it safely and
+deterministically; **[ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill)** is the media execution engine that
+actually runs FFmpeg. Full boundary, including how this differs from `media-analysis-skill`'s pure measurement role:
+[docs/architecture.md](docs/architecture.md).
 
-## Architecture
+## Quick start
 
-```text
-external caller (video-production-agent adapter)
-   │  JSON request  color-grading/request@1   (stdin)
-   ▼
-color-grading run - --json
-   ├─ model.parse_request        typed validation: schema, ids, references, parameter schemas per operation type,
-   │                             forbidden fields (command / argv / filter / api_key / workspace / …), enums, ranges
-   ├─ security.PathPolicy        source is a regular file (symlinks resolved, optional allowed roots); LUTs resolved
-   │                             through a *separate* allowed-roots policy; outputs inside the workspace, never an
-   │                             input, never an existing file unless overwrite, container must match the source
-   ├─ graph.OperationGraph       nodes (source, operations), deterministic topological order, cycle / unreachable
-   │                             detection
-   ├─ adapter.FfmpegSkill.probe  the source probed (read-only) and sha256-fingerprinted; every LUT resolved and
-   │                             sha256-hashed (read-only, also under dry run)
-   ├─ graph.identities           operation_id = sha256(type, parameters, input identity, tool versions);
-   │                             LUT_APPLY's identity uses the LUT's sha256, never its path
-   ├─ plan                       tool per node (always ffmpeg-skill/color), argv template, expected geometry
-   ├─ execute (in order)         ffmpeg-skill/color → one intermediate per node, reused when the identity and input
-   │                             hash match a manifest
-   ├─ validate                   exists, size > 0, readable, video stream, duration/resolution unchanged, sha256,
-   │                             and the operation's own measurable effect (HDR_TO_SDR: no longer HDR; RETAG: exact
-   │                             tag triple; STRIP_DOVI: no Dolby Vision side data; LUT_APPLY: pix_fmt yuv420p)
-   ├─ materialise outputs        copy the validated artifact's bytes to the requested path (no reformatting needed),
-   │                             re-validated against `expect`
-   ▼
-JSON response  color-grading/response@1   (stdout, exactly one document; stderr = diagnostics)
+Requirements: Python 3.9+ (standard library only), an
+[ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) checkout (0.9.1 ≤ version < 1.0), and `ffmpeg` / `ffprobe`
+on `PATH` for ffmpeg-skill itself.
+
+```bash
+# 1. install this skill
+pip install -e .
+
+# 2. check the machine: ffmpeg-skill, ffmpeg/ffprobe, and every capability the four operations need
+color-grading doctor --json --ffmpeg-skill /path/to/ffmpeg-skill
+
+# 3. read the machine-readable contract (for agent frameworks)
+color-grading skill --json | head -40
 ```
 
-Full description: [docs/architecture.md](docs/architecture.md).
-
-## Skill / Capability / Tool
-
-- **Skill**: `color-grading` (this package), kind `execution`, one tool `color-grading/run`.
-- **Capabilities** (vocabulary of video-production-agent's CapabilityResolver): `ffmpeg-skill`, `ffmpeg`, `ffprobe`,
-  `filter:<name>`, `encoder:<name>`, `bsf:<name>`. `doctor` reports each as `supported`, `unsupported` or `unknown`.
-- **Tools used** (all through ffmpeg-skill's public contract 1.0): `ffmpeg-skill/probe`, `ffmpeg-skill/color`. Which
-  flags are used is listed in `skill --json` → `ffmpeg_skill.flags_used` and checked against the live ffmpeg-skill
-  contract by `doctor`.
-
-## Contract
-
-`color-grading skill --json` prints `color-grading/contract@1`: stable identifiers `skill_id`, `version`,
-`tools[].tool_id`, `operations[].type`, `operations[].parameters`, `operations[].required_capabilities`,
-`unsupported_operations`, `output_formats`, `lut`, `color_space`, `hdr_sdr`, `errors.codes`, `errors.exit_codes`,
-`schema_versions`. Everything is derived from the tables the code runs on; there are no placeholder operations.
-
-### Input schema (`color-grading/request@1`)
+Write a request naming the operation graph — here, HDR tone mapping followed by a LUT:
 
 ```json
 {
@@ -98,221 +77,230 @@ Full description: [docs/architecture.md](docs/architecture.md).
     "project_id": "grade-42",
     "source": {"source_id": "raw", "path": "footage/iphone_hdr.mov"},
     "operations": [
-      {"op_id": "sdr", "type": "HDR_TO_SDR", "input": "source",
-       "parameters": {"tonemap": "hable", "peak_nits": 1000, "desat": 0.1}},
-      {"op_id": "grade", "type": "LUT_APPLY", "input": "op:sdr",
-       "parameters": {"lut_path": "luts/look_a.cube", "lut_strength": 0.8}}
+      {"op_id": "sdr", "type": "HDR_TO_SDR", "input": "source", "parameters": {"tonemap": "hable"}},
+      {"op_id": "grade", "type": "LUT_APPLY", "input": "op:sdr", "parameters": {"lut_path": "luts/look_a.cube"}}
     ],
-    "outputs": [
-      {"output_id": "graded", "operation": "op:grade", "path": "deliver/grade-42.mov", "format": "mov",
-       "expect": {"width": 3840, "height": 2160}}
-    ]
-  },
-  "options": {"reuse_intermediates": true, "timeout": 900}
+    "outputs": [{"output_id": "graded", "operation": "op:grade", "path": "deliver/grade-42.mov", "format": "mov"}]
+  }
 }
 ```
 
-- `source`: one file (a colour operation processes one clip; batch a shoot by sending one request per clip, or use
-  ffmpeg-skill/batch for that orchestration). `operations`: the graph; `input` is a reference `source` / `op:<id>`,
-  always exactly one per operation (no colour operation here merges two clips). `outputs`: terminal artifacts;
-  `format`'s extension must equal the source's (no container conversion, ADR-8).
-- Every id matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`; a reference matches `^(source|op:[A-Za-z0-9][A-Za-z0-9._-]{0,63})$`.
-- Fields named `command`, `argv`, `cmd`, `shell`, `exec`, `executable`, `script`, `filter`, `filters`,
-  `filter_complex`, `vf`, `af`, `ffmpeg`, `env`, `cwd`, `api_key`, `workspace` are rejected anywhere in the
-  document; unknown fields are rejected everywhere.
-- **LUT**: `lut_path` is required, no default: the caller decides which LUT. It is data (never a filter string),
-  resolved through its own PathPolicy, checked for a `.cube` extension and a size ceiling, and sha256-hashed into
-  provenance and into the operation's identity (docs/decisions.md ADR-5/6/7).
-- **Tone mapping**: `tonemap` / `peak_nits` / `desat` / `force` are always explicit, typed parameters; this skill
-  never picks a tonemap curve automatically, and `HDR_TO_SDR` refuses a non-HDR-tagged source unless `force: true`.
-- **Retag**: `target` is one of `bt709` / `bt2020-pq` / `bt2020-hlg` / `bt601`, required, no default.
+Then plan (read-only) and run it:
 
-### Output schema (`color-grading/response@1`)
-
-```json
-{
-  "schema": "color-grading/response@1", "skill": {"id": "color-grading", "version": "0.1.0"},
-  "ok": true, "status": "ok", "dry_run": false,
-  "plan": {"plan_id": "<sha256>", "graph": {"order": ["source", "op:sdr", "op:grade"]}, "steps": ["..."], "required_capabilities": ["..."], "tool_versions": {"ffmpeg-skill": "0.9.1", "ffmpeg": "6.1.1"}},
-  "results": [{
-    "node_id": "op:grade", "operation_id": "<sha256>", "type": "LUT_APPLY", "tool": "ffmpeg-skill/color", "status": "completed",
-    "parameters": {"lut_path": "luts/look_a.cube", "lut_strength": 0.8, "crf": 18, "preset": "medium"},
-    "input": "op:sdr", "input_hash": "<sha256>", "lut": {"path": ".../luts/look_a.cube", "size": 4096, "sha256": "<sha256>"},
-    "artifact": {"path": ".../.color-grading/grade-42/<id16>.mov", "duration": 12.5, "width": 3840, "height": 2160, "pix_fmt": "yuv420p", "codec": "h264", "hdr": false, "dolby_vision": false, "sha256": "<sha256>"},
-    "tool_commands_observed": ["ffmpeg ..."], "seconds": 8.1
-  }],
-  "outputs": [{"output_id": "graded", "status": "completed", "path": ".../deliver/grade-42.mov", "format": "mov", "artifact": {"sha256": "<sha256>"},
-               "provenance": {"skill": "color-grading", "skill_version": "0.1.0", "tool_versions": {}, "output_hash": "<sha256>",
-                              "operation_id": "<sha256>", "operations": ["output -> operation -> ... -> source, with hashes and status"], "source": {"sha256": "<sha256>"}}}],
-  "tool_runs": [{"tool": "ffmpeg-skill/probe", "exit_code": 0, "seconds": 0.1, "commands_observed": []}],
-  "warnings": []
-}
+```bash
+color-grading plan request.json --json     # graph, tool selection, expected geometry — writes no media
+color-grading run request.json --json      # execute; stdout: exactly one color-grading/response@1 document
 ```
 
-Failure (any stage) is the same document shape with `"ok": false`, `"status": "error" | "cancelled"` and
-`"error": {"code", "message", "retryable", "details"}`; the per-node `results` show which node failed and which
-were skipped. `ok` mirrors the process exit code (0 ⇔ `ok`); `status` follows the media-analysis-skill convention.
+`ok: true` and `outputs[0].status: "completed"` mean the artifact exists at `deliver/grade-42.mov`, was re-probed,
+and matched what `HDR_TO_SDR` and `LUT_APPLY` are each supposed to have measurably done. Full request/response
+schema: [docs/architecture.md](docs/architecture.md); the plain-language contract an agent reads: [SKILL.md](SKILL.md).
+
+## How it works
+
+```mermaid
+flowchart LR
+    A["video-production-agent<br/>decides WHAT<br/>which LUT · which tonemap curve · which retag target"] -->|"color-grading/request@1"| B["color-grading-skill<br/>decides HOW<br/>typed, deterministic execution"]
+    B -->|"python3 scripts/probe.py, color.py"| C["ffmpeg-skill<br/>media execution engine"]
+    C --> D[FFmpeg / FFprobe]
+```
+
+```mermaid
+flowchart TD
+    R["JSON request<br/>color-grading/request@1"] --> V["Validation<br/>typed schema · forbidden fields · PathPolicy"]
+    V --> G["Operation Graph<br/>deterministic topological order"]
+    G --> I["Deterministic identity<br/>sha256 of type + parameters + input + tool versions"]
+    I --> E["Execute via ffmpeg-skill/color<br/>one intermediate per node, reused when identity matches"]
+    E --> C2["Artifact validation<br/>re-probe: colour tags · HDR state · Dolby Vision · geometry"]
+    C2 --> O["JSON response<br/>color-grading/response@1 + provenance"]
+```
+
+Nothing in this pipeline reasons about the image. Every box is a typed, mechanical step; the only judgement call
+(which operation, which LUT, which curve) already happened upstream, in the request this skill receives.
 
 ## Supported operations
 
-| type | parameters | ffmpeg-skill tool / flags | notes |
-|---|---|---|---|
-| `HDR_TO_SDR` | `tonemap` (`hable`\|`mobius`\|`reinhard`\|`bt2390`\|`clip`\|`linear`\|`gamma`, default `hable`), `peak_nits` [1, 10000] (default 1000), `desat` [0, 5] (default 0), `force` (default false), `crf` [0, 51] (default 18), `preset` (x264 preset, default `medium`) | `color --to-sdr --tonemap … --peak … --desat … [--force] --crf … --preset …` | refuses a non-HDR source unless `force: true`; output verified to no longer report `hdr: true` |
-| `LUT_APPLY` | `lut_path` (required), `lut_strength` [0, 1] (default 1.0), `crf`, `preset` | `color --lut <resolved path> --lut-strength … --crf … --preset …` | a strength of exactly `0.0` behaves like `1.0` (full LUT) — ffmpeg-skill's own contract, see docs/ffmpeg-skill.md; output verified `pix_fmt == yuv420p` |
-| `RETAG` | `target` (`bt709`\|`bt2020-pq`\|`bt2020-hlg`\|`bt601`, required) | `color --retag <target>` | stream copy when the container allows it; output verified against the exact `(color_space, color_primaries, color_transfer)` triple |
-| `STRIP_DOVI` | *(none)* | `color --strip-dovi` | HEVC only; stream copy; output verified to no longer report `dolby_vision` |
+| Operation | Purpose |
+|---|---|
+| `HDR_TO_SDR` | HDR (PQ/HLG, BT.2020) → SDR BT.709 tone mapping with an explicit curve |
+| `LUT_APPLY` | Apply a 3D `.cube` LUT |
+| `RETAG` | Rewrite colour tags (BT.709 / BT.2020 PQ / BT.2020 HLG / BT.601) without a re-encode where possible |
+| `STRIP_DOVI` | Remove a Dolby Vision RPU (HEVC only) |
 
-Every operation takes exactly one input (`source` or another `op:<id>`); none of them change duration or frame
-geometry (verified: duration and resolution must match the source within `duration_tolerance`, default 0.2 s).
+Each maps 1:1 onto one mode of `ffmpeg-skill/color`; every operation takes exactly one input and none of them
+change duration or frame geometry (verified against the source within a documented tolerance). Full parameter
+tables, defaults, ranges and the exact ffmpeg-skill flags behind each one: [docs/architecture.md](docs/architecture.md)
+and [docs/ffmpeg-skill.md](docs/ffmpeg-skill.md).
 
-Output formats (`outputs[].format`): `mp4`, `mov`, `m4v`, `mkv` — the extension must match the source's; this skill
-does not convert containers (ADR-8; use ffmpeg-skill/export for that).
+Output containers (`mp4`, `mov`, `m4v`, `mkv`) must match the source's — this skill does not convert containers
+(use ffmpeg-skill/export for that).
 
-**Declared but not implemented** (`unsupported_operations` in the contract, `UNSUPPORTED_OPERATION` at validation):
-`EXPOSURE`, `CONTRAST`, `SATURATION`, `TEMPERATURE`, `TINT`, `WHITE_BALANCE`, `GAMMA`, `LIFT`, `GAIN`, `LEVELS`,
-`CURVES` — ffmpeg-skill's public contract has no typed primary colour-correction filter for any of them. Details
-and the exact gaps: [docs/ffmpeg-skill.md](docs/ffmpeg-skill.md).
+## Deterministic execution
 
-## CLI
+Every operation gets an identity — `sha256` over canonical JSON of `{type, effective parameters, input identity,
+tool versions}` — computed before anything runs. Two things follow from that:
 
-| command | reads media | writes media | exit |
-|---|---|---|---|
-| `skill --json` / `contract --json` | no | no | 0 |
-| `doctor --json [--ffmpeg-skill DIR] [--workspace DIR] [--allowed-input ROOT] [--allowed-lut ROOT]` | no (runs ffmpeg-skill doctor) | no | 0, 1 on `fail` |
-| `validate REQUEST\|- --json` | no | no | 0 / error exit code |
-| `plan REQUEST\|- --json` | probe source + hash any LUTs (read-only) | no | 0 / error exit code |
-| `run REQUEST\|- --json [--dry-run] [--workspace DIR] [--allowed-input ROOT] [--allowed-lut ROOT] [--ffmpeg-skill DIR] [--timeout S] [--no-reuse]` | yes | yes | 0 / error exit code |
+- **Reuse.** Re-running the same request with the same inputs and the same ffmpeg-skill/FFmpeg versions reuses every
+  matching intermediate instead of re-encoding. A tampered or truncated intermediate is detected (size + `sha256`
+  re-checked against the manifest) and re-processed, never falsely trusted.
+- **Content-addressed LUTs.** `LUT_APPLY`'s identity uses the LUT file's own `sha256`, never its path: a LUT moved to
+  a new location keeps its identity; a LUT edited in place at the same path gets a new one. A LUT is data, resolved
+  through its own path policy and hashed — never a filter string.
 
-The ffmpeg-skill checkout is found from `--ffmpeg-skill`, else `COLOR_GRADING_FFMPEG_SKILL_DIR`,
-`VIDEO_AGENT_FFMPEG_SKILL_DIR`, `~/.claude/skills/ffmpeg-skill`, `./vendor/ffmpeg-skill`, `../ffmpeg-skill`. It is
-never taken from the request document.
+No timestamps, no UUIDs, stable topological order. Identical request + identical inputs + identical tool versions
+→ identical `plan_id` and operation ids, every time. Design rationale: [docs/decisions.md](docs/decisions.md).
 
-## Doctor
+## Artifact validation
 
-`doctor --json` (`color-grading/doctor@1`) reports: Python; the located ffmpeg-skill (directory, version, contract
-version, the flags this skill needs, problems); ffmpeg / ffprobe versions as detected by ffmpeg-skill's doctor;
-every capability as `supported` / `unsupported` / `unknown`; every operation type with its status and the missing
-or unknown capabilities; the not-implemented operations; output formats; the path policy (workspace, allowed input
-roots, allowed LUT roots). Status: `ok`, `degraded` (some operation unsupported), `fail` (ffmpeg-skill missing /
-incompatible or path policy broken). `secrets_shown` is always `false`.
+This skill does not trust a `0` exit code from ffmpeg-skill as proof that an operation worked. Every artifact is
+re-probed and checked: exists, size > 0, readable, has a video stream, duration and resolution unchanged from the
+source — plus the operation's own measurable effect:
 
-## Process boundary
+| Operation | What is verified on the output |
+|---|---|
+| `HDR_TO_SDR` | no longer reports `hdr: true` |
+| `LUT_APPLY` | `pix_fmt == yuv420p` |
+| `RETAG` | the exact `(color_space, color_primaries, color_transfer)` triple requested |
+| `STRIP_DOVI` | no Dolby Vision side data present |
 
-`caller → JSON (stdin) → typed validation → operation graph → ffmpeg-skill adapter (argv) → media execution →
-output validation → JSON (stdout)`. With `--json`, stdout carries exactly one document, on success and failure
-alike; stderr carries diagnostics (including ffmpeg-skill's own log lines). Exit codes are stable (`errors.exit_codes`).
-
-## Security
-
-- No shell, no `eval`, no user-supplied command, argv, executable, script or filter string; the request schema
-  rejects such fields by name and rejects unknown fields. One `subprocess.Popen` in the package (adapter), argv
-  only, allow-listed scripts only (`probe.py`, `color.py`), minimal child environment.
-- Every argv value is a fixed flag, a number formatted by this skill, an enum member already validated against the
-  model schema, or a resolved absolute path.
-- A LUT is data: resolved through its own path policy (separate allowed roots from the video input), checked for a
-  `.cube` extension and a size ceiling, hashed; never parsed, interpreted or treated as a filter string.
-- Inputs and LUTs: regular files, symlinks resolved, optional `--allowed-input` / `--allowed-lut` roots; outputs:
-  inside `--workspace`, no `..`, no symlinked escape, no reserved Windows names / invalid characters / option-like
-  names, never an input, never an existing file unless `overwrite: true`, container must match the source. Inputs
-  are never modified.
-- Failed or cancelled runs leave no partial output and no intermediate without a manifest.
-
-Details: [docs/security.md](docs/security.md).
-
-## Determinism
-
-Operation identity = sha256 over canonical JSON of `{type, effective parameters, input identity, tool versions}`;
-the source's identity is its file sha256; a `LUT_APPLY` identity uses the LUT's sha256, never its path (a LUT moved
-without changing content keeps its identity). No timestamps, no UUIDs, stable topological order (smallest node id
-first among ready nodes), stable key order. Identical request + identical inputs + identical ffmpeg-skill / ffmpeg
-version → identical `plan_id` and operation ids, reused intermediates, and content-equivalent outputs.
+This caught a real ffmpeg-skill/FFmpeg limitation during development: a stream-copy retag can exit `0` without
+actually rewriting colour tags already baked into a source's bitstream. This skill reports that as
+`VALIDATION_ERROR`, never a false success — see [docs/ffmpeg-skill.md](docs/ffmpeg-skill.md) for the measured case.
 
 ## Provenance
 
-Per operation: `operation_id`, `type`, `tool`, `tool_versions`, `parameters`, `input_hash`, `output_hash` (in
-`artifact.sha256`), `lut` (LUT_APPLY only: path, size, sha256), `status`, `measurements`, `tool_commands_observed`.
-Per output: `skill`, `skill_version`, `tool_versions`, `output_hash`, the whole operation chain back to the source
-with its sha256. The caller's *instruction* (the request) and the skill's *observation* (`results`,
-`tool_runs`) are separate parts of the response; measured colour metadata (`color_space`, `color_primaries`,
-`color_transfer`, `color_range`, `pix_fmt`, `hdr`, `dolby_vision`) is always OBSERVED (from `ffmpeg-skill/probe`),
-never inferred or assumed from the request.
+Every result carries what it did, not just that it succeeded: `operation_id`, `type`, `tool`, `tool_versions`,
+`input_hash`, `output_hash`, the LUT's own hash (for `LUT_APPLY`), `measurements`, and `tool_commands_observed` (the
+commands ffmpeg-skill itself reports having run, not a description this skill reconstructs afterwards). Every
+output carries the full operation chain back to the source, each link with its own hash and status. Measured colour
+metadata is always *observed* (read back from `ffmpeg-skill/probe`), never inferred from the request.
+
+## Security
+
+- No shell, no `eval`, no user-supplied command, argv, executable, script or filter string — those field names are
+  rejected anywhere in the request document, at any nesting depth; unknown fields are rejected everywhere.
+- Every value that reaches a subprocess argv is a fixed flag, a number formatted by this skill, an enum already
+  validated against the schema, or a resolved absolute path — never a raw string from the request.
+- A LUT is resolved through its own path policy, separate from the video input's (a caller allowed to read footage
+  under `/footage` cannot thereby name any file on the machine as a LUT), checked for a `.cube` extension and a size
+  ceiling, and hashed — never parsed or treated as a filter string.
+- Inputs and LUTs must be regular files (symlinks resolved before every check); outputs must resolve inside the
+  workspace — no `..`, no symlinked escape, no reserved Windows device names — and may never be an existing input
+  file unless `overwrite: true` is explicit.
+- Only `ffmpeg-skill/probe` and `ffmpeg-skill/color` can ever be started, from a checkout named by the caller, never
+  by the request document, with a minimal child environment.
+
+Full enforcement table, including what is deliberately *not* enforced (e.g. no root restriction by default, matching
+the rest of the ecosystem): [docs/security.md](docs/security.md).
+
+## Built for agents
+
+### Machine-readable contract
+
+```bash
+color-grading skill --json      # color-grading/contract@1: operations, parameters, capabilities, errors, schemas
+color-grading doctor --json     # color-grading/doctor@1: environment vs. contract, per-capability status
+```
+
+The contract states stable identifiers (`skill_id`, `operations[].type`, `operations[].parameters`,
+`unsupported_operations`, `output_formats`, `errors.codes`), all derived from the tables the code runs on — there
+are no placeholder operations. `doctor` reports every capability (`ffmpeg-skill`, `ffmpeg`, `ffprobe`,
+`filter:<name>`, `encoder:<name>`, `bsf:<name>`) as `supported`, `unsupported` or `unknown` — an installed capability
+is never reported absent, and a failed detection is never silently read as a pass.
+
+### CLI
+
+| command | reads media | writes media |
+|---|---|---|
+| `skill --json` / `contract --json` | no | no |
+| `doctor --json [--ffmpeg-skill DIR]` | no | no |
+| `validate REQUEST\|- --json` | no | no |
+| `plan REQUEST\|- --json` | probes source + hashes LUTs (read-only) | no |
+| `run REQUEST\|- --json [--dry-run] [--workspace DIR] [--allowed-input ROOT] [--allowed-lut ROOT]` | yes | yes |
+
+`stdout` under `--json` is always exactly one document, on success and failure alike; `stderr` carries diagnostics.
+Exit codes are stable per error code (see [Error handling](#error-handling) below); every command supports `--help`
+for its full flag list.
+
+### ffmpeg-skill integration
+
+This skill never calls `ffmpeg` or `ffprobe` itself. Every process it starts is
+`python3 <ffmpeg-skill>/scripts/{probe,color}.py` with a typed argv, verified against ffmpeg-skill's own
+machine-readable contract (`contract_version 1.0`) before use — flags this skill emits are checked against the live
+contract by `doctor`, and a version outside `[0.9.1, 1.0.0)` is refused rather than assumed to behave the same.
+Exact tools, flags and every measured compatibility gap: [docs/ffmpeg-skill.md](docs/ffmpeg-skill.md).
 
 ## Error handling
 
-| code | exit | retryable | when |
-|---|---|---|---|
-| `INVALID_REQUEST` | 2 | no | document shape, unknown / forbidden field, bad type, enum or range |
-| `INVALID_INPUT` | 3 | no | source missing, not a regular file, unreadable, no video stream, LUT missing/empty/oversized |
-| `PATH_NOT_ALLOWED` | 4 | no | outside allowed roots / workspace, traversal, symlink escape, unsafe name |
-| `UNSUPPORTED_OPERATION` | 5 | no | not implemented (declared or unknown type) |
-| `UNSUPPORTED_FORMAT` | 6 | no | output format unknown, extension mismatch, output container ≠ source container, LUT not `.cube` |
-| `INVALID_TIME_RANGE` | 7 | no | reserved for a future time-bounded operation; not raised by 0.1.0's operations |
-| `DEPENDENCY_ERROR` | 8 | no | duplicate id, cycle, self-reference, unreachable node |
-| `MISSING_INPUT` | 9 | no | reference to an undeclared operation |
-| `OUTPUT_ERROR` | 10 | no | output exists, collides with the input, empty, could not be written |
-| `VALIDATION_ERROR` | 11 | no | artifact failed post-validation (stream, duration, resolution, colour tags, pix_fmt) |
-| `TOOL_ERROR` | 12 | yes | ffmpeg-skill missing / incompatible (not retryable), tool failure, timeout |
-| `CANCELLED` | 13 | yes | SIGINT / SIGTERM |
-| `INTERNAL_ERROR` | 14 | no | a bug in this skill (still one JSON document) |
+| code | when |
+|---|---|
+| `INVALID_REQUEST` | document shape, unknown/forbidden field, bad type, enum or range |
+| `INVALID_INPUT` | source missing, not a regular file, unreadable, no video stream, LUT missing/empty/oversized |
+| `PATH_NOT_ALLOWED` | outside allowed roots/workspace, traversal, symlink escape, unsafe name |
+| `UNSUPPORTED_OPERATION` | not implemented (declared or unknown type) |
+| `UNSUPPORTED_FORMAT` | output format unknown, extension mismatch, container ≠ source, LUT not `.cube` |
+| `DEPENDENCY_ERROR` | duplicate id, cycle, self-reference, unreachable node |
+| `MISSING_INPUT` | reference to an undeclared operation |
+| `OUTPUT_ERROR` | output exists, collides with the input, empty, could not be written |
+| `VALIDATION_ERROR` | artifact failed post-validation (stream, duration, resolution, colour tags, pix_fmt) |
+| `TOOL_ERROR` | ffmpeg-skill missing/incompatible, tool failure, timeout (retryable) |
+| `CANCELLED` | SIGINT/SIGTERM (retryable) |
+| `INTERNAL_ERROR` | a bug in this skill — still exactly one JSON document |
 
-## Testing
-
-```text
-pip install -e . pytest
-export COLOR_GRADING_FFMPEG_SKILL_DIR=/path/to/ffmpeg-skill     # or clone it as ../ffmpeg-skill
-python -m pytest -q          # unit + security + contract + integration with real video; nothing is skipped
-```
-
-See [docs/testing.md](docs/testing.md) for the file-by-file coverage. CI runs Linux (3.9, 3.11), Windows and macOS
-with a real FFmpeg and a fresh ffmpeg-skill clone: [.github/workflows/tests.yml](.github/workflows/tests.yml).
-
-## Real media verification
-
-`tests/test_integration.py` runs every implemented operation (`HDR_TO_SDR`, `LUT_APPLY`, `RETAG`, `STRIP_DOVI`) and
-a chained pipeline against real video through the real ffmpeg-skill and FFmpeg, and asserts, from `ffmpeg-skill/probe`
-of the output, exactly what STEP 18/19 of the design brief ask for: the artifact exists, its size and sha256, its
-duration and resolution, its video stream, and its measured colour metadata against the requested operation — plus
-one deterministic pixel-level check (`LUT_APPLY` with a size-2 "invert" `.cube` LUT: the average colour of the
-output must be `255 - average colour of the input`, within a documented tolerance for chroma subsampling and lossy
-encoding, never a subjective "looks graded" judgement). See docs/testing.md for exact fixture construction and the
-one real limitation (no genuine Dolby Vision RPU can be synthesised with plain ffmpeg, so `STRIP_DOVI`'s real-media
-test exercises the operation and its "no Dolby Vision side data present" check, not actual RPU removal).
-
-## Relationship to the other skills
-
-- **ffmpeg-skill** – the execution engine; see [docs/ffmpeg-skill.md](docs/ffmpeg-skill.md) for the exact tools,
-  flags and the compatibility gaps that define what is *not* offered here.
-- **media-analysis-skill** – measures; not colour-specific in its 0.1.0 (no colour analyzer), so this skill's own
-  `ffmpeg-skill/probe` calls are currently the only source of colour facts it consumes.
-- **video-production-agent** – the only intended caller: decides which colour treatment, LUT or tonemap curve to
-  apply, builds the request, runs `color-grading run - --json`, reads `results` / `outputs` into its provenance and
-  Artifact model.
-- **audio-production-skill, video-editing-skill, transcription-skill, subtitle-skill, QC** – not touched; this
-  skill has no audio, cut/trim, speech or final-QC role.
+Every code has a stable exit code (`errors.exit_codes` in the contract); `ok` mirrors the process exit code.
 
 ## Current limitations
 
-- One source per request (a colour operation processes one clip; there is no MIX/CONCAT analogue for colour).
-- No container/format conversion (ADR-8): output must keep the source's container.
-- A colour operation chain of N operations costs N re-encodes (or stream copies for RETAG/STRIP_DOVI); there is no
-  way to fold `HDR_TO_SDR` and `LUT_APPLY` into one ffmpeg process, because ffmpeg-skill/color's mode flags are
-  mutually exclusive (docs/ffmpeg-skill.md).
-- `LUT_APPLY.lut_strength` of exactly `0.0` behaves like `1.0` (full LUT applied) — this is ffmpeg-skill's own
-  documented behaviour (`0 < lut_strength < 1` blends; the endpoints do not), not a bug this skill introduces or
-  can fix without changing ffmpeg-skill.
-- `doctor` reports `filter:zscale` / `filter:tonemap` / `filter:lut3d` as `unknown` when ffmpeg-skill's own filter
-  detection fails (FFmpeg ≥ 8.0's `-filters` output has a different flag width than ffmpeg-skill 0.9's parser
-  expects); execution proceeds and output validation decides.
-- No cache eviction: the work directory grows until the caller removes `<workspace>/.color-grading/<project_id>/`.
-- Primary colour correction (exposure, contrast, saturation, white balance, temperature, tint, gamma, lift, gain,
-  levels, curves) is not implemented: ffmpeg-skill has no typed filter for it yet (docs/ffmpeg-skill.md).
+Stated as boundary, not as bugs to be worked around with a private filter string:
 
-## Future extensions (not in this release)
+- **Primary colour correction is not implemented**: `EXPOSURE`, `CONTRAST`, `SATURATION`, `TEMPERATURE`, `TINT`,
+  `WHITE_BALANCE`, `GAMMA`, `LIFT`, `GAIN`, `LEVELS`, `CURVES` are declared in the contract's
+  `unsupported_operations` and rejected with `UNSUPPORTED_OPERATION` — ffmpeg-skill's public contract has no typed
+  filter for any of them yet. This skill will not grow a private one; it will support these once ffmpeg-skill (or a
+  future typed capability) does. Details per operation: [docs/ffmpeg-skill.md](docs/ffmpeg-skill.md).
+- One source per request; no MIX/CONCAT analogue for colour.
+- No container/format conversion — output keeps the source's container.
+- A chain of N operations costs N re-encodes/stream-copies (ffmpeg-skill/color's mode flags are mutually exclusive).
+- `LUT_APPLY`'s `lut_strength` of exactly `0.0` behaves like `1.0` (full LUT) — ffmpeg-skill's own documented
+  behaviour, not something this skill introduces or can fix on its own.
+- No cache eviction: `<workspace>/.color-grading/<project_id>/` grows until the caller removes it.
 
-Primary colour correction, once ffmpeg-skill (or a second execution backend) gains a typed filter for it; multiple
-sources / a colour-consistent look applied across a batch of clips in one request; audio-stream selection; each
-requires a corresponding capability in ffmpeg-skill's public contract, and will be declared only once implemented
-and tested.
+## Testing
+
+```bash
+pip install -e . pytest
+export COLOR_GRADING_FFMPEG_SKILL_DIR=/path/to/ffmpeg-skill     # or clone it as ../ffmpeg-skill
+python -m pytest -q
+```
+
+148 tests, nothing skipped by default, nothing mocked in the integration layer: 84 unit (schema, graph, path policy,
+determinism), 36 security (injection, path/symlink escapes, argv audit), 5 contract (contract ⇔ implementation,
+doctor), and 23 integration tests that run every operation against real video through a real ffmpeg-skill checkout
+and real FFmpeg — including one deterministic pixel-level LUT check and a reproduction of the exit-0-but-unchanged
+retag case above. CI (`.github/workflows/tests.yml`) runs Linux (Python 3.9, 3.11), Windows and macOS, each against
+a real FFmpeg install and a pinned ffmpeg-skill checkout. File-by-file coverage and what real-media verification
+does and does not prove: [docs/testing.md](docs/testing.md).
+
+## Docs
+
+| | |
+|---|---|
+| [SKILL.md](SKILL.md) | what the calling agent reads: contract, rules, and how to read the response |
+| [docs/architecture.md](docs/architecture.md) | full request/response schema, operation graph, identity, execution pipeline |
+| [docs/decisions.md](docs/decisions.md) | design decisions (ADRs) and the reasoning behind them |
+| [docs/ffmpeg-skill.md](docs/ffmpeg-skill.md) | exact tools/flags used, version compatibility, every measured gap |
+| [docs/security.md](docs/security.md) | full enforcement table: what is and is not defended against |
+| [docs/testing.md](docs/testing.md) | file-by-file test coverage, fixture construction |
+
+## Relationship to the other skills
+
+| | [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) | [media-analysis-skill](https://github.com/kajisho5/media-analysis-skill) | **color-grading-skill** | [video-production-agent](https://github.com/kajisho5/video-production-agent) |
+|---|---|---|---|---|
+| Role | media execution engine (hands) | measurement / observation (meters) | **colour grading execution** | reasoning / decision / orchestration (brain) |
+| Never | holds a project model | edits or writes media | decides which LUT/curve, performs primary colour correction, converts containers, runs ffmpeg directly | runs ffmpeg |
+
+`audio-production-skill`, `video-editing-skill`, `transcription-skill`, `subtitle-skill` and QC are not touched by
+this skill — it has no audio, cut/trim, speech or final-QC role.
 
 ## Support
 
