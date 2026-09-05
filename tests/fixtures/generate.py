@@ -6,7 +6,12 @@ ffmpeg directly; the skill under test never does. Every fixture has a known cons
                 see the note below)
   sdr_noaudio.mp4  2 s 160x90 H.264 (yuv420p), no audio stream, no explicit colour tags
   hevc_sdr.mp4  2 s 160x90 HEVC (yuv420p), SDR, no explicit colour tags, no Dolby Vision side data
-  hdr.mp4       2 s 160x90 HEVC Main10 (yuv420p10le), tagged BT.2020 / PQ (smpte2084) - HDR10
+  hdr.mp4       2 s 160x90 HEVC Main10 (yuv420p10le), tagged BT.2020 / PQ (smpte2084) - HDR10; the colour tags are
+                written with the `hevc_metadata` bitstream filter (directly into the VUI, not just the top-level
+                -colorspace/-color_primaries/-color_trc encode flags) because those top-level flags were observed
+                to not always reach libx265's VUI signalling on every platform/build (measured: absent on a Windows
+                CI runner's ffmpeg, present on Linux/macOS for the same command) -- the bsf is unconditionally
+                reliable since it edits the bitstream itself
   audio.wav     2 s mono PCM tone, no video stream (audio-only)
   text.txt      not media
   invert.cube   a 3D LUT (size 2) that exactly inverts every channel (output = 1 - input); trilinear/tetrahedral
@@ -68,8 +73,13 @@ def build_all(directory: Path) -> Dict[str, Path]:
           "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(f["sdr"])])
     _run(["-f", "lavfi", "-i", SOLID, "-t", "2", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(f["sdr_noaudio"])])
     _run(["-f", "lavfi", "-i", SOLID, "-t", "2", "-c:v", "libx265", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-tag:v", "hvc1", str(f["hevc_sdr"])])
-    _run(["-f", "lavfi", "-i", SOLID, "-t", "2", "-c:v", "libx265", "-preset", "veryfast", "-pix_fmt", "yuv420p10le",
-          "-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", "smpte2084", "-tag:v", "hvc1", str(f["hdr"])])
+    hdr_base = d / "_hdr_base.mp4"
+    _run(["-f", "lavfi", "-i", SOLID, "-t", "2", "-c:v", "libx265", "-preset", "veryfast", "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1", str(hdr_base)])
+    # rewrite the VUI directly (colour_primaries=9 BT.2020, transfer_characteristics=16 PQ, matrix_coefficients=9
+    # BT.2020 nc): reliable on every platform, unlike top-level -colorspace/-color_primaries/-color_trc encode flags
+    _run(["-i", str(hdr_base), "-c", "copy", "-bsf:v", "hevc_metadata=colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9:video_full_range_flag=0",
+          "-tag:v", "hvc1", "-movflags", "+faststart", str(f["hdr"])])
+    hdr_base.unlink()
     _run(["-f", "lavfi", "-i", f"aevalsrc='{TONE}':s=48000:c=mono", "-t", "2", "-c:a", "pcm_s16le", str(f["audio"])])
     f["text"].write_text("not media\n", encoding="utf-8")
     f["invert_cube"].write_text(INVERT_CUBE, encoding="utf-8")

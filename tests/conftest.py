@@ -34,6 +34,16 @@ def hevc_available() -> bool:
 
 
 @pytest.fixture(scope="session")
+def capabilities(skill_dir):
+    """Real, current capability statuses (supported/unsupported/unknown) from this platform's ffmpeg-skill + ffmpeg,
+    e.g. zscale needs libzimg, which is not compiled into every ffmpeg build (observed: macOS Homebrew's plain
+    "ffmpeg" formula omits it) -- tests that need a specific filter check this instead of assuming it is present."""
+    from color_grading.doctor import runtime_context
+    _, _, caps = runtime_context(str(skill_dir), 60)
+    return caps
+
+
+@pytest.fixture(scope="session")
 def media(tmp_path_factory):
     if not available():
         pytest.fail("ffmpeg / ffprobe are required for the integration tests (install FFmpeg); they are not skipped")

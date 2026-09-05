@@ -38,7 +38,9 @@ def results(d):
     return {r["node_id"]: r for r in d["results"]}
 
 
-def test_hdr_to_sdr(workspace):
+def test_hdr_to_sdr(workspace, capabilities):
+    if capabilities.get("filter:zscale") == "unsupported":
+        pytest.skip("filter:zscale not available in this ffmpeg build (needs libzimg; e.g. macOS Homebrew's plain 'ffmpeg' formula omits it)")
     doc = request_doc([op("s", "HDR_TO_SDR", "source", tonemap="hable", peak_nits=1000, desat=0.1)], source={"source_id": "a", "path": "hdr.mp4"},
                       outputs=[{"output_id": "main", "operation": "op:s", "path": "out/main.mp4", "format": "mp4"}])
     code, d = run(doc)
@@ -135,7 +137,9 @@ def test_strip_dovi_refuses_non_hevc(workspace):
     assert d["ok"] is False and d["error"]["code"] == "TOOL_ERROR" and d["error"]["details"]["error_kind"] == "input"
 
 
-def test_chained_pipeline_hdr_to_sdr_then_lut(workspace):
+def test_chained_pipeline_hdr_to_sdr_then_lut(workspace, capabilities):
+    if capabilities.get("filter:zscale") == "unsupported":
+        pytest.skip("filter:zscale not available in this ffmpeg build (needs libzimg; e.g. macOS Homebrew's plain 'ffmpeg' formula omits it)")
     doc = request_doc([op("s", "HDR_TO_SDR", "source"), op("l", "LUT_APPLY", "op:s", lut_path="invert.cube")], source={"source_id": "a", "path": "hdr.mp4"})
     code, d = run(doc)
     assert code == 0 and d["ok"], d.get("error")

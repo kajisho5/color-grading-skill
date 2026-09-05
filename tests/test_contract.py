@@ -44,9 +44,12 @@ def test_doctor_reports_supported_unsupported_unknown(skill_dir):
     ops = d["checks"]["operations"]
     assert set(ops) == set(OPERATION_TYPES)
     assert all(o["status"] in ("supported", "unsupported", "unknown") for o in ops.values())
-    # FFmpeg >= 8.0 defeats ffmpeg-skill's filter parser: filters are then unknown, never unsupported
+    # RETAG needs only ffmpeg/ffprobe (no optional filter), so it is always supported once those are present
     assert ops["RETAG"]["status"] == "supported"
-    assert ops["HDR_TO_SDR"]["status"] in ("supported", "unknown")
+    # HDR_TO_SDR needs the optional zscale/tonemap filters: FFmpeg >= 8.0 can defeat ffmpeg-skill's filter parser
+    # (then unknown, never unsupported), and some builds (e.g. macOS Homebrew's plain "ffmpeg" formula) do not
+    # compile libzimg/zscale in at all (then genuinely unsupported, correctly detected) -- all three are legitimate
+    assert ops["HDR_TO_SDR"]["status"] in ("supported", "unsupported", "unknown")
     assert d["checks"]["filter_detection"]["status"] in ("ok", "unknown")
     assert d["checks"]["unsupported_operations"] == UNSUPPORTED_OPERATIONS
     caps = d["checks"]["capabilities"]
