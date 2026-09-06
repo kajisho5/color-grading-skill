@@ -32,10 +32,10 @@ jobs:
       - name: Install FFmpeg (Windows)
         if: runner.os == 'Windows'
         run: choco install ffmpeg -y --no-progress
-      - name: Fetch ffmpeg-skill (execution engine, public contract 1.0, pinned to the commit verified for 0.9.1)
+      - name: Fetch ffmpeg-skill (execution engine, public contract 1.0, pinned to the commit verified for 0.9.2)
         run: |
           git clone https://github.com/kajisho5/ffmpeg-skill vendor/ffmpeg-skill
-          git -C vendor/ffmpeg-skill checkout 2abd89c
+          git -C vendor/ffmpeg-skill checkout b51dc5e8c846e08025f713f5cb57cfff21de3b39
         shell: bash
       - run: ffprobe -version
         shell: bash

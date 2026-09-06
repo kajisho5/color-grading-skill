@@ -46,8 +46,8 @@ and reports what it observed.
 
 | | |
 |---|---|
-| **Does** | execute `HDR_TO_SDR`, `LUT_APPLY`, `RETAG`, `STRIP_DOVI` as a dependency graph; validate every artifact by re-probing it (measured colour tags, never assumed); reuse intermediates by content-addressed identity; record full provenance |
-| **Does not** | decide *which* colour treatment, LUT or tonemap curve to apply; look at a frame and judge it "cinematic"; perform primary colour correction (exposure, contrast, saturation, white balance, temperature, tint, gamma, lift, gain, levels, curves — see [Limitations](#current-limitations)); convert containers; run `ffmpeg` directly; accept a command, argv or filter string from the caller |
+| **Does** | execute `HDR_TO_SDR`, `LUT_APPLY`, `RETAG`, `STRIP_DOVI`, `PRIMARY_CORRECTION` as a dependency graph; validate every artifact by re-probing it (measured colour tags, never assumed); reuse intermediates by content-addressed identity; record full provenance |
+| **Does not** | decide *which* colour treatment, LUT, tonemap curve or correction values to apply; look at a frame and judge it "cinematic"; perform gamma, lift, gain, levels or curves correction (see [Limitations](#current-limitations)); convert containers; run `ffmpeg` directly; accept a command, argv or filter string from the caller |
 
 That split is the whole design: **[video-production-agent](https://github.com/kajisho5/video-production-agent)**
 decides *what* to do and builds the request; **color-grading-skill** decides *how* to execute it safely and
@@ -58,14 +58,14 @@ actually runs FFmpeg. Full boundary, including how this differs from `media-anal
 ## Quick start
 
 Requirements: Python 3.9+ (standard library only), an
-[ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) checkout (0.9.1 ≤ version < 1.0), and `ffmpeg` / `ffprobe`
-on `PATH` for ffmpeg-skill itself.
+[ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) checkout (0.9.2 ≤ version < 1.0, for `PRIMARY_CORRECTION`'s
+`--correct`), and `ffmpeg` / `ffprobe` on `PATH` for ffmpeg-skill itself.
 
 ```bash
 # 1. install this skill
 pip install -e .
 
-# 2. check the machine: ffmpeg-skill, ffmpeg/ffprobe, and every capability the four operations need
+# 2. check the machine: ffmpeg-skill, ffmpeg/ffprobe, and every capability the five operations need
 color-grading doctor --json --ffmpeg-skill /path/to/ffmpeg-skill
 
 # 3. read the machine-readable contract (for agent frameworks)
@@ -130,6 +130,7 @@ Nothing in this pipeline reasons about the image. Every box is a typed, mechanic
 | `LUT_APPLY` | Apply a 3D `.cube` LUT |
 | `RETAG` | Rewrite colour tags (BT.709 / BT.2020 PQ / BT.2020 HLG / BT.601) without a re-encode where possible |
 | `STRIP_DOVI` | Remove a Dolby Vision RPU (HEVC only) |
+| `PRIMARY_CORRECTION` | Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint) — each an explicit, independently optional, range-checked parameter |
 
 Each maps 1:1 onto one mode of `ffmpeg-skill/color`; every operation takes exactly one input and none of them
 change duration or frame geometry (verified against the source within a documented tolerance). Full parameter
@@ -166,6 +167,7 @@ source — plus the operation's own measurable effect:
 | `LUT_APPLY` | `pix_fmt == yuv420p` |
 | `RETAG` | the exact `(color_space, color_primaries, color_transfer)` triple requested |
 | `STRIP_DOVI` | no Dolby Vision side data present |
+| `PRIMARY_CORRECTION` | no fixed target state (a continuous correction, not a discrete tag); the generic checks above plus ffmpeg-skill's own before/after `measurements` (real signalstats numbers — luminance and saturation averages — never a subjective judgement) |
 
 This caught a real ffmpeg-skill/FFmpeg limitation during development: a stream-copy retag can exit `0` without
 actually rewriting colour tags already baked into a source's bitstream. This skill reports that as
@@ -265,11 +267,11 @@ Every code has a stable exit code (`errors.exit_codes` in the contract); `ok` mi
 
 Stated as boundary, not as bugs to be worked around with a private filter string:
 
-- **Primary colour correction is not implemented**: `EXPOSURE`, `CONTRAST`, `SATURATION`, `TEMPERATURE`, `TINT`,
-  `WHITE_BALANCE`, `GAMMA`, `LIFT`, `GAIN`, `LEVELS`, `CURVES` are declared in the contract's
-  `unsupported_operations` and rejected with `UNSUPPORTED_OPERATION` — ffmpeg-skill's public contract has no typed
-  filter for any of them yet. This skill will not grow a private one; it will support these once ffmpeg-skill (or a
-  future typed capability) does. Details per operation: [docs/ffmpeg-skill.md](docs/ffmpeg-skill.md).
+- **Gamma, lift, gain, levels and curves are not implemented**: `WHITE_BALANCE` (as its own operation type — use
+  `PRIMARY_CORRECTION`'s `temperature`/`tint` instead), `GAMMA`, `LIFT`, `GAIN`, `LEVELS`, `CURVES` are declared in
+  the contract's `unsupported_operations` and rejected with `UNSUPPORTED_OPERATION` — ffmpeg-skill's public contract
+  has no typed filter for any of them yet. This skill will not grow a private one; it will support these once
+  ffmpeg-skill (or a future typed capability) does. Details per operation: [docs/ffmpeg-skill.md](docs/ffmpeg-skill.md).
 - One source per request; no MIX/CONCAT analogue for colour.
 - No container/format conversion — output keeps the source's container.
 - A chain of N operations costs N re-encodes/stream-copies (ffmpeg-skill/color's mode flags are mutually exclusive).
@@ -285,13 +287,14 @@ export COLOR_GRADING_FFMPEG_SKILL_DIR=/path/to/ffmpeg-skill     # or clone it as
 python -m pytest -q
 ```
 
-148 tests, nothing skipped by default, nothing mocked in the integration layer: 84 unit (schema, graph, path policy,
-determinism), 36 security (injection, path/symlink escapes, argv audit), 5 contract (contract ⇔ implementation,
-doctor), and 23 integration tests that run every operation against real video through a real ffmpeg-skill checkout
-and real FFmpeg — including one deterministic pixel-level LUT check and a reproduction of the exit-0-but-unchanged
-retag case above. CI (`.github/workflows/tests.yml`) runs Linux (Python 3.9, 3.11), Windows and macOS, each against
-a real FFmpeg install and a pinned ffmpeg-skill checkout. File-by-file coverage and what real-media verification
-does and does not prove: [docs/testing.md](docs/testing.md).
+185 tests, nothing skipped by default, nothing mocked in the integration layer: 102 unit (schema, graph, path
+policy, determinism), 49 security (injection, path/symlink escapes, argv audit), 5 contract (contract ⇔
+implementation, doctor), and 29 integration tests that run every operation against real video through a real
+ffmpeg-skill checkout and real FFmpeg — including deterministic pixel-level checks for `LUT_APPLY` and
+`PRIMARY_CORRECTION`, `PRIMARY_CORRECTION`'s observed before/after `measurements`, and a reproduction of the
+exit-0-but-unchanged retag case above. CI (`.github/workflows/tests.yml`) runs Linux (Python 3.9, 3.11), Windows and
+macOS, each against a real FFmpeg install and a pinned ffmpeg-skill checkout. File-by-file coverage and what
+real-media verification does and does not prove: [docs/testing.md](docs/testing.md).
 
 ## Docs
 
@@ -309,7 +312,7 @@ does and does not prove: [docs/testing.md](docs/testing.md).
 | | [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) | [media-analysis-skill](https://github.com/kajisho5/media-analysis-skill) | **color-grading-skill** | [video-production-agent](https://github.com/kajisho5/video-production-agent) |
 |---|---|---|---|---|
 | Role | media execution engine (hands) | measurement / observation (meters) | **colour grading execution** | reasoning / decision / orchestration (brain) |
-| Never | holds a project model | edits or writes media | decides which LUT/curve, performs primary colour correction, converts containers, runs ffmpeg directly | runs ffmpeg |
+| Never | holds a project model | edits or writes media | decides which LUT/curve/correction values, performs gamma/lift/gain/levels/curves correction, converts containers, runs ffmpeg directly | runs ffmpeg |
 
 `audio-production-skill`, `video-editing-skill`, `transcription-skill`, `subtitle-skill` and QC are not touched by
 this skill — it has no audio, cut/trim, speech or final-QC role.
