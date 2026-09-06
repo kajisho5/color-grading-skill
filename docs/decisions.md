@@ -105,3 +105,16 @@
     ffmpeg-skill's contract — only the two independent `temperature`/`tint` parameters of `PRIMARY_CORRECTION` that
     together achieve it (ADR-13). `GAMMA`/`LIFT`/`GAIN`/`LEVELS`/`CURVES` remain unimplemented for the same reason
     as before: no corresponding typed ffmpeg-skill capability yet (docs/ffmpeg-skill.md).
+- **ADR-16 `provides`: publish this Skill's five operations as cross-repository Capability ids.** Added for
+  `kajisho5/AI-video-production-OS`'s `CapabilityContract.provides` (`docs/SPEC.md` there), so a registry can
+  resolve "who provides `color.hdr_to_sdr`" without hardcoding this repository. `model.OPERATION_TYPES` has no
+  native capability-shaped id of its own, so the id per operation type is a new naming decision, not a mechanical
+  derivation — it matches the ids already assigned in that project's own `docs/CAPABILITY_MATRIX.md`, kept here in
+  `contract.CAPABILITY_IDS` as the single source of truth going forward: `HDR_TO_SDR` → `color.hdr_to_sdr`,
+  `LUT_APPLY` → `color.lut_apply`, `RETAG` → `color.retag`, `STRIP_DOVI` → `color.strip_dovi`. `PRIMARY_CORRECTION`
+  (ADR-15) postdates that matrix's own audit, so its id (`color.primary_correction`) is this repository's own
+  provisional one, following the same convention (same situation as motion-graphics-skill's `bug`/`chapter` ids).
+  Every operation type gets an id: this Skill has a single tool (`{SKILL_ID}/run`) and every operation always
+  writes a validated video artifact through it. Additive: a new top-level `provides` key derived from
+  `OPERATION_TYPES`, saying nothing `operations[]` doesn't already say, only indexed by Capability id instead of
+  operation type.
