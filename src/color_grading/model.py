@@ -15,10 +15,14 @@ Every operation here maps 1:1 onto a mode of ffmpeg-skill/color (`--to-sdr`, `--
 `--correct`): this skill is a typed front end for that tool's public contract, not a colour-correction engine of
 its own. PRIMARY_CORRECTION (ffmpeg-skill >= 0.9.2) covers exposure / contrast / saturation / white balance
 (temperature + tint) as five typed, range-checked parameters, exactly mirroring `color.py --correct`'s own five
-flags and ranges (docs/ffmpeg-skill.md) -- never a raw filter string. White balance as its own operation type,
-gamma, lift, gain, levels and curves remain in UNSUPPORTED_OPERATIONS because ffmpeg-skill's public contract has no
-typed filter for them yet; they are not implemented here, and they never will be by improvising a raw ffmpeg filter
-string in this package (that would cross the ffmpeg-skill boundary, see docs/architecture.md)."""
+original flags and ranges (docs/ffmpeg-skill.md) -- never a raw filter string. ffmpeg-skill 0.12.3 added five more
+typed `--correct` flags (gamma, three-way lift/gain, colorlevels, and the curves filter's built-in presets);
+PRIMARY_CORRECTION gained the matching eight parameters (gamma / lift / gain / levels_in_black / levels_in_white /
+levels_out_black / levels_out_white / curves) the same way, still never a raw filter string (docs/decisions.md
+ADR-18). White balance stays in UNSUPPORTED_OPERATIONS as its own operation type because no single "white balance"
+flag exists -- only PRIMARY_CORRECTION's temperature and tint parameters together achieve it; this package will
+never work around a genuine ffmpeg-skill gap by improvising a raw ffmpeg filter string of its own (that would cross
+the ffmpeg-skill boundary, see docs/architecture.md)."""
 from __future__ import annotations
 
 import math
@@ -49,6 +53,10 @@ OUTPUT_FORMATS: Dict[str, Dict[str, Any]] = {
 X264_PRESETS = ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo")
 TONEMAPS = ("hable", "mobius", "reinhard", "bt2390", "clip", "linear", "gamma")
 RETAG_TARGETS = ("bt709", "bt2020-pq", "bt2020-hlg", "bt601")
+# color.py's own curves filter built-in presets (its CURVES_PRESETS, `ffmpeg -h filter=curves`), excluding the
+# filter's own "none" (0): omitting --curves already gets that identity result without a curves filter term.
+CURVES_PRESETS = ("color_negative", "cross_process", "darker", "increase_contrast", "lighter",
+                  "linear_contrast", "medium_contrast", "negative", "strong_contrast", "vintage")
 # color.py's own retag mapping (colorspace, color_primaries, color_trc), used again in executor._expected_retag_tags
 RETAG_TAGS: Dict[str, Tuple[str, str, str]] = {
     "bt709": ("bt709", "bt709", "bt709"),
@@ -100,29 +108,36 @@ OPERATION_TYPES: Dict[str, Dict[str, Any]] = {
         "target": {"type": _STR, "required": True, "enum": list(RETAG_TARGETS), "description": "colour tag set to write"},
         **_AUDIO_STREAM_PARAM}},
     "STRIP_DOVI": {"description": "Remove the Dolby Vision RPU (profile 8.4 clips), keeping the HLG/HDR10 base layer; stream copy (ffmpeg-skill/color --strip-dovi)", "parameters": {}},
-    "PRIMARY_CORRECTION": {"description": "Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint) "
-                           "(ffmpeg-skill/color --correct, requires ffmpeg-skill >= 0.9.2); each parameter is one option of one real ffmpeg filter "
-                           "(exposure / eq / colortemperature / colorbalance), range-checked by ffmpeg-skill itself -- never a filter string", "parameters": {
+    "PRIMARY_CORRECTION": {"description": "Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint), "
+                           "gamma, three-way shadows/highlights (lift/gain), levels and a curves preset "
+                           "(ffmpeg-skill/color --correct, requires ffmpeg-skill >= 0.9.2 for the first five, >= 0.12.3 for the other eight); "
+                           "each parameter is one option of one real ffmpeg filter (exposure / eq / colortemperature / colorbalance / colorlevels / "
+                           "curves), range-checked by ffmpeg-skill itself -- never a filter string", "parameters": {
         "exposure": {"type": _NUM, "required": False, "min": -3.0, "max": 3.0, "default": 0.0, "description": "exposure correction in stops; 0 is unchanged"},
         "contrast": {"type": _NUM, "required": False, "min": 0.0, "max": 2.0, "default": 1.0, "description": "contrast; 1 is unchanged, 0 is flat grey, 2 is double contrast"},
         "saturation": {"type": _NUM, "required": False, "min": 0.0, "max": 2.0, "default": 1.0, "description": "saturation; 1 is unchanged, 0 is grayscale, 2 is double saturation"},
         "temperature": {"type": _NUM, "required": False, "min": 2000.0, "max": 12000.0, "default": 6500.0, "description": "white-balance temperature in Kelvin; 6500 is unchanged"},
         "tint": {"type": _NUM, "required": False, "min": -1.0, "max": 1.0, "default": 0.0, "description": "green(-1)/magenta(+1) tint; 0 is unchanged"},
+        "gamma": {"type": _NUM, "required": False, "min": 0.1, "max": 10.0, "default": 1.0, "description": "master gamma (eq filter's own gamma); 1 is unchanged"},
+        "lift": {"type": _NUM, "required": False, "min": -1.0, "max": 1.0, "default": 0.0, "description": "shadows lift (colorbalance rs/gs/bs, three-way colour correction); 0 is unchanged"},
+        "gain": {"type": _NUM, "required": False, "min": -1.0, "max": 1.0, "default": 0.0, "description": "highlights gain (colorbalance rh/gh/bh, three-way colour correction); 0 is unchanged"},
+        "levels_in_black": {"type": _INT, "required": False, "min": 0, "max": 255, "default": 0, "description": "colorlevels input black point, 0..255 (8-bit units); 0 is unchanged"},
+        "levels_in_white": {"type": _INT, "required": False, "min": 0, "max": 255, "default": 255, "description": "colorlevels input white point, 0..255 (8-bit units); 255 is unchanged"},
+        "levels_out_black": {"type": _INT, "required": False, "min": 0, "max": 255, "default": 0, "description": "colorlevels output black point, 0..255 (8-bit units); 0 is unchanged"},
+        "levels_out_white": {"type": _INT, "required": False, "min": 0, "max": 255, "default": 255, "description": "colorlevels output white point, 0..255 (8-bit units); 255 is unchanged"},
+        "curves": {"type": _STR, "required": False, "enum": list(CURVES_PRESETS), "default": None, "description": "curves filter built-in preset; None (default) adds no curves term"},
         **_ENCODE_PARAMS, **_AUDIO_STREAM_PARAM}},
 }
 
 # declared, not implemented: ffmpeg-skill's public contract has no typed filter for these (docs/ffmpeg-skill.md).
 # This skill never adds one by writing a raw ffmpeg filter itself. Exposure / contrast / saturation / temperature /
 # tint moved out of this table in favour of PRIMARY_CORRECTION once ffmpeg-skill 0.9.2 added typed --correct flags
-# for them (docs/decisions.md ADR-15); WHITE_BALANCE stays declared because there is no single "white balance"
-# operation type or flag -- only the two separate PRIMARY_CORRECTION parameters that together achieve it.
+# for them (docs/decisions.md ADR-15); gamma / lift / gain / levels / curves moved out the same way once ffmpeg-skill
+# 0.12.3 added typed --correct flags for them too (ADR-18). WHITE_BALANCE stays declared because there is no single
+# "white balance" operation type or flag -- only the two separate PRIMARY_CORRECTION parameters that together
+# achieve it.
 UNSUPPORTED_OPERATIONS: Dict[str, str] = {
     "WHITE_BALANCE": "no single white-balance operation or flag exists; use PRIMARY_CORRECTION's temperature and tint parameters",
-    "GAMMA": "ffmpeg-skill exposes no typed gamma filter (no eq gamma control) in its public contract",
-    "LIFT": "ffmpeg-skill exposes no typed lift (shadows) control in its public contract",
-    "GAIN": "ffmpeg-skill exposes no typed gain (highlights) control in its public contract; not to be confused with audio-production's audio GAIN operation",
-    "LEVELS": "ffmpeg-skill exposes no typed levels filter in its public contract",
-    "CURVES": "ffmpeg-skill exposes no typed curves filter in its public contract",
 }
 
 
@@ -237,7 +252,24 @@ def validate_parameters(op_type: str, params: Any, where: str) -> Dict[str, Any]
             if not isinstance(v, bool):
                 raise ColorError("INVALID_REQUEST", f"{w} must be a boolean", {"field": w})
             out[name] = v
+    if op_type == "PRIMARY_CORRECTION":
+        _validate_levels_ordering(out, where)
     return out
+
+
+def _validate_levels_ordering(params: Dict[str, Any], where: str) -> None:
+    """PRIMARY_CORRECTION's colorlevels parameters: the same in_black<in_white / out_black<out_white ordering
+    ffmpeg-skill's own color.py --correct enforces (die()), duplicated here as an independent, fail-fast guard at
+    the request boundary -- same convention as every other PRIMARY_CORRECTION range check (docs/decisions.md
+    ADR-15/ADR-18), never relying on ffmpeg-skill's own check exclusively."""
+    in_black, in_white = params["levels_in_black"], params["levels_in_white"]
+    if in_black >= in_white:
+        raise ColorError("INVALID_REQUEST", f"{where}.levels_in_black {in_black} must be less than levels_in_white {in_white}",
+                         {"field": f"{where}.levels_in_black", "levels_in_black": in_black, "levels_in_white": in_white})
+    out_black, out_white = params["levels_out_black"], params["levels_out_white"]
+    if out_black >= out_white:
+        raise ColorError("INVALID_REQUEST", f"{where}.levels_out_black {out_black} must be less than levels_out_white {out_white}",
+                         {"field": f"{where}.levels_out_black", "levels_out_black": out_black, "levels_out_white": out_white})
 
 
 def parse_ref(ref: Any, where: str) -> Tuple[str, str]:

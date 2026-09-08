@@ -218,7 +218,10 @@ def test_preset_enum_rejects_unknown():
 
 def test_primary_correction_defaults_are_identity():
     p = validate_parameters("PRIMARY_CORRECTION", {}, "x")
-    assert p == {"exposure": 0.0, "contrast": 1.0, "saturation": 1.0, "temperature": 6500.0, "tint": 0.0, "crf": 18, "preset": "medium", "audio_stream": 0}
+    assert p == {"exposure": 0.0, "contrast": 1.0, "saturation": 1.0, "temperature": 6500.0, "tint": 0.0,
+                 "gamma": 1.0, "lift": 0.0, "gain": 0.0, "levels_in_black": 0, "levels_in_white": 255,
+                 "levels_out_black": 0, "levels_out_white": 255, "curves": None,
+                 "crf": 18, "preset": "medium", "audio_stream": 0}
 
 
 @pytest.mark.parametrize("name,bad", [("exposure", -3.01), ("exposure", 3.01), ("contrast", -0.01), ("contrast", 2.01),
@@ -241,6 +244,85 @@ def test_primary_correction_range_boundaries_accepted(name, edge):
 def test_primary_correction_is_not_in_unsupported_operations():
     assert "PRIMARY_CORRECTION" not in UNSUPPORTED_OPERATIONS
     assert "PRIMARY_CORRECTION" in OPERATION_TYPES
+
+
+# ---- gamma/lift/gain/levels/curves (ffmpeg-skill >= 0.12.3 --correct flags, docs/decisions.md ADR-18)
+def test_gamma_lift_gain_levels_curves_are_not_in_unsupported_operations():
+    for name in ("GAMMA", "LIFT", "GAIN", "LEVELS", "CURVES"):
+        assert name not in UNSUPPORTED_OPERATIONS
+
+
+def test_primary_correction_defaults_include_the_new_parameters_at_identity():
+    p = validate_parameters("PRIMARY_CORRECTION", {}, "x")
+    assert p["gamma"] == 1.0 and p["lift"] == 0.0 and p["gain"] == 0.0
+    assert p["levels_in_black"] == 0 and p["levels_in_white"] == 255
+    assert p["levels_out_black"] == 0 and p["levels_out_white"] == 255
+    assert p["curves"] is None
+
+
+@pytest.mark.parametrize("name,bad", [("gamma", 0.09), ("gamma", 10.01), ("lift", -1.01), ("lift", 1.01),
+                                       ("gain", -1.01), ("gain", 1.01)])
+def test_gamma_lift_gain_out_of_safe_range_rejected(name, bad):
+    with pytest.raises(ColorError) as e:
+        validate_parameters("PRIMARY_CORRECTION", {name: bad}, "x")
+    assert e.value.code == "INVALID_REQUEST"
+
+
+@pytest.mark.parametrize("name,edge", [("gamma", 0.1), ("gamma", 10.0), ("lift", -1.0), ("lift", 1.0),
+                                        ("gain", -1.0), ("gain", 1.0)])
+def test_gamma_lift_gain_range_boundaries_accepted(name, edge):
+    p = validate_parameters("PRIMARY_CORRECTION", {name: edge}, "x")
+    assert p[name] == edge
+
+
+@pytest.mark.parametrize("name", ["levels_in_black", "levels_in_white", "levels_out_black", "levels_out_white"])
+@pytest.mark.parametrize("bad", [-1, 256])
+def test_levels_out_of_range_rejected(name, bad):
+    with pytest.raises(ColorError) as e:
+        validate_parameters("PRIMARY_CORRECTION", {name: bad}, "x")
+    assert e.value.code == "INVALID_REQUEST"
+
+
+@pytest.mark.parametrize("name", ["levels_in_black", "levels_in_white", "levels_out_black", "levels_out_white"])
+def test_levels_non_integer_rejected(name):
+    with pytest.raises(ColorError):
+        validate_parameters("PRIMARY_CORRECTION", {name: 1.5}, "x")
+
+
+def test_levels_in_black_must_be_less_than_in_white():
+    with pytest.raises(ColorError) as e:
+        validate_parameters("PRIMARY_CORRECTION", {"levels_in_black": 200, "levels_in_white": 200}, "x")
+    assert e.value.code == "INVALID_REQUEST"
+    with pytest.raises(ColorError):
+        validate_parameters("PRIMARY_CORRECTION", {"levels_in_black": 235, "levels_in_white": 16}, "x")
+
+
+def test_levels_out_black_must_be_less_than_out_white():
+    with pytest.raises(ColorError) as e:
+        validate_parameters("PRIMARY_CORRECTION", {"levels_out_black": 100, "levels_out_white": 100}, "x")
+    assert e.value.code == "INVALID_REQUEST"
+    with pytest.raises(ColorError):
+        validate_parameters("PRIMARY_CORRECTION", {"levels_out_black": 200, "levels_out_white": 50}, "x")
+
+
+def test_levels_valid_ordering_accepted():
+    p = validate_parameters("PRIMARY_CORRECTION", {"levels_in_black": 16, "levels_in_white": 235,
+                                                     "levels_out_black": 0, "levels_out_white": 255}, "x")
+    assert (p["levels_in_black"], p["levels_in_white"]) == (16, 235)
+    assert (p["levels_out_black"], p["levels_out_white"]) == (0, 255)
+
+
+def test_curves_accepts_a_real_preset():
+    from color_grading.model import CURVES_PRESETS
+    for preset in CURVES_PRESETS:
+        p = validate_parameters("PRIMARY_CORRECTION", {"curves": preset}, "x")
+        assert p["curves"] == preset
+
+
+def test_curves_invalid_choice_rejected():
+    with pytest.raises(ColorError) as e:
+        validate_parameters("PRIMARY_CORRECTION", {"curves": "bogus_preset"}, "x")
+    assert e.value.code == "INVALID_REQUEST"
 
 
 def test_retag_tags_have_four_entries_matching_targets():
@@ -316,6 +398,19 @@ def test_graph_identities_depend_on_primary_correction_parameters():
     assert ids1["op:a"] == ids3["op:a"]
 
 
+def test_graph_identities_depend_on_gamma_lift_gain_levels_curves():
+    params = {"exposure": 0.0, "contrast": 1.0, "saturation": 1.0, "temperature": 6500.0, "tint": 0.0,
+              "gamma": 1.0, "lift": 0.0, "gain": 0.0, "levels_in_black": 0, "levels_in_white": 255,
+              "levels_out_black": 0, "levels_out_white": 255, "curves": None, "crf": 18, "preset": "medium"}
+    ops = [ColorOperation("a", "PRIMARY_CORRECTION", "source", dict(params))]
+    ids1 = OperationGraph(_project(ops)).identities("deadbeef", {"ffmpeg-skill": "0.12.3"})
+    for changed in ({**params, "gamma": 1.2}, {**params, "lift": 0.1}, {**params, "gain": -0.1},
+                    {**params, "levels_in_black": 16}, {**params, "curves": "medium_contrast"}):
+        ops2 = [ColorOperation("a", "PRIMARY_CORRECTION", "source", changed)]
+        ids2 = OperationGraph(_project(ops2)).identities("deadbeef", {"ffmpeg-skill": "0.12.3"})
+        assert ids1["op:a"] != ids2["op:a"], changed
+
+
 def test_graph_identity_source_depends_on_fingerprint_only():
     g = OperationGraph(_project([]))
     ids_a = g.identities("aaaa", {})
@@ -349,7 +444,10 @@ def _argv_for(tmp_path, typ, params, lut=None):
 @pytest.mark.parametrize("typ,params", [
     ("HDR_TO_SDR", {"tonemap": "hable", "peak_nits": 1000.0, "desat": 0.0, "force": False, "crf": 18, "preset": "medium", "audio_stream": 2}),
     ("RETAG", {"target": "bt709", "audio_stream": 2}),
-    ("PRIMARY_CORRECTION", {"exposure": 0.0, "contrast": 1.0, "saturation": 1.0, "temperature": 6500.0, "tint": 0.0, "crf": 18, "preset": "medium", "audio_stream": 2}),
+    ("PRIMARY_CORRECTION", {"exposure": 0.0, "contrast": 1.0, "saturation": 1.0, "temperature": 6500.0, "tint": 0.0,
+                            "gamma": 1.0, "lift": 0.0, "gain": 0.0, "levels_in_black": 0, "levels_in_white": 255,
+                            "levels_out_black": 0, "levels_out_white": 255, "curves": None,
+                            "crf": 18, "preset": "medium", "audio_stream": 2}),
 ])
 def test_argv_includes_audio_stream_flag_with_its_value(tmp_path, typ, params):
     argv = _argv_for(tmp_path, typ, params)
@@ -369,6 +467,49 @@ def test_argv_strip_dovi_has_no_audio_stream_flag(tmp_path):
     every audio track untouched regardless."""
     argv = _argv_for(tmp_path, "STRIP_DOVI", {})
     assert "--audio-stream" not in argv
+
+
+# ---- executor._argv: gamma/lift/gain/levels/curves threaded to --correct (ffmpeg-skill >= 0.12.3, ADR-18)
+def _primary_correction_params(**overrides):
+    p = {"exposure": 0.0, "contrast": 1.0, "saturation": 1.0, "temperature": 6500.0, "tint": 0.0,
+         "gamma": 1.0, "lift": 0.0, "gain": 0.0, "levels_in_black": 0, "levels_in_white": 255,
+         "levels_out_black": 0, "levels_out_white": 255, "curves": None, "crf": 18, "preset": "medium", "audio_stream": 0}
+    p.update(overrides)
+    return p
+
+
+def test_argv_includes_gamma_lift_gain_with_their_values(tmp_path):
+    argv = _argv_for(tmp_path, "PRIMARY_CORRECTION", _primary_correction_params(gamma=1.2, lift=0.04, gain=-0.03))
+    assert argv[argv.index("--gamma") + 1] == "1.2000"
+    assert argv[argv.index("--lift") + 1] == "0.0400"
+    assert argv[argv.index("--gain") + 1] == "-0.0300"
+
+
+def test_argv_includes_levels_flags_with_their_values(tmp_path):
+    argv = _argv_for(tmp_path, "PRIMARY_CORRECTION",
+                     _primary_correction_params(levels_in_black=16, levels_in_white=235, levels_out_black=5, levels_out_white=250))
+    assert argv[argv.index("--levels-in-black") + 1] == "16"
+    assert argv[argv.index("--levels-in-white") + 1] == "235"
+    assert argv[argv.index("--levels-out-black") + 1] == "5"
+    assert argv[argv.index("--levels-out-white") + 1] == "250"
+
+
+def test_argv_levels_flags_always_present_even_at_default(tmp_path):
+    """color.py's own convention: levels flags are harmless at their identity default (0/255/0/255), and this
+    skill always passes them, same as the other always-present PRIMARY_CORRECTION flags (ADR-15/ADR-18)."""
+    argv = _argv_for(tmp_path, "PRIMARY_CORRECTION", _primary_correction_params())
+    for flag in ("--levels-in-black", "--levels-in-white", "--levels-out-black", "--levels-out-white"):
+        assert flag in argv
+
+
+def test_argv_curves_omitted_when_not_set(tmp_path):
+    argv = _argv_for(tmp_path, "PRIMARY_CORRECTION", _primary_correction_params(curves=None))
+    assert "--curves" not in argv
+
+
+def test_argv_curves_included_when_set(tmp_path):
+    argv = _argv_for(tmp_path, "PRIMARY_CORRECTION", _primary_correction_params(curves="medium_contrast"))
+    assert argv[argv.index("--curves") + 1] == "medium_contrast"
 
 
 # ---- executor._validate_artifact: independent subtitle/data-stream-survival re-probe (no ffmpeg needed, ffmpeg-skill/

@@ -16,9 +16,9 @@ media-analysis-skill            measures inputs for the agent (not colour-specif
 
 Responsibilities that are deliberately **absent** here: deciding which colour treatment, LUT, tonemap curve or
 correction values to apply; automatic "look" or LUT selection; looking at a frame and judging it "cinematic" or
-"washed out"; shot matching; gamma, lift, gain, levels or curves correction — ffmpeg-skill has no typed filter for
-these yet (docs/ffmpeg-skill.md); production planning; approvals; transcription; subtitles; QC; container/format
-conversion (that is ffmpeg-skill/export).
+"washed out"; shot matching; a single "white balance" operation type — ffmpeg-skill has no one flag for that, only
+`PRIMARY_CORRECTION`'s separate `temperature`/`tint` parameters (docs/ffmpeg-skill.md); production planning;
+approvals; transcription; subtitles; QC; container/format conversion (that is ffmpeg-skill/export).
 
 ## Typed Colour Project Model (`model.py`)
 
@@ -67,7 +67,10 @@ edited at the same path does not. `plan_id` hashes every node identity plus the 
    (`executor._argv`): `HDR_TO_SDR` → `--to-sdr --tonemap … --peak … --desat … [--force] --crf … --preset …`;
    `LUT_APPLY` → `--lut <resolved path> --lut-strength … --crf … --preset …`; `RETAG` → `--retag <target>`;
    `STRIP_DOVI` → `--strip-dovi`; `PRIMARY_CORRECTION` → `--correct --exposure … --contrast … --saturation …
-   --temperature … --tint … --crf … --preset …`. For `PRIMARY_CORRECTION`, ffmpeg-skill's own before/after
+   --temperature … --tint … --gamma … --lift … --gain … --levels-in-black … --levels-in-white …
+   --levels-out-black … --levels-out-white … [--curves <preset>] --crf … --preset …` (`--curves` is only added when
+   the caller set it; every other flag is always emitted, matching ffmpeg-skill's own always-present chain). For
+   `PRIMARY_CORRECTION`, ffmpeg-skill's own before/after
    `measurements` (from its existing `analyze_levels`/signalstats primitive) come back in the tool's JSON document
    and are carried into `NodeState.measurements`, the manifest and provenance unchanged — this skill never computes
    or judges them itself.
@@ -103,15 +106,20 @@ process exit code is `0` iff `ok`, else `errors.EXIT_CODES[code]`.
 
 ## Versioning
 
-- Package / Skill version: `color_grading.VERSION` (`0.3.0`), carried in every document and in every intermediate manifest.
+- Package / Skill version: `color_grading.VERSION` (`0.4.0`), carried in every document and in every intermediate manifest.
 - Document schemas: `color-grading/{contract,request,response,doctor}@1`, versioned independently; within `@1`
   changes are additive only. Renaming an operation type, a parameter, or changing how an operation is realised bumps
   the minor package version (and therefore every operation identity, by design). `0.3.0` added `audio_stream` to
   `HDR_TO_SDR`/`LUT_APPLY`/`RETAG`/`PRIMARY_CORRECTION`'s parameters (docs/decisions.md ADR-17): every existing
   identity for those four operation types changes because the effective parameter set they hash now includes it.
-- ffmpeg-skill compatibility window: contract `1.0`, version `[0.12.1, 1.0.0)` (measured; see docs/ffmpeg-skill.md).
+  `0.4.0` added `gamma`/`lift`/`gain`/`levels_in_black`/`levels_in_white`/`levels_out_black`/`levels_out_white`/
+  `curves` to `PRIMARY_CORRECTION`'s parameters (docs/decisions.md ADR-18): every existing `PRIMARY_CORRECTION`
+  identity changes for the same reason.
+- ffmpeg-skill compatibility window: contract `1.0`, version `[0.12.3, 1.0.0)` (measured; see docs/ffmpeg-skill.md).
   Raised from `[0.9.2, 1.0.0)` (set when `PRIMARY_CORRECTION` was added) to `[0.12.1, 1.0.0)` when `audio_stream`
   and honest `dropped_non_av_streams` reporting were added (ADR-17): `--audio-stream` first exists in ffmpeg-skill
   0.12.0, and `--to-sdr`/`--lut`/`--correct` only started honestly reporting `dropped_non_av_streams` in 0.12.1
   (RETAG's own `reencoded`/`dropped_non_av_streams` reporting is 0.12.0), so 0.12.1 is the first version where the
   stream-survival check this skill now runs (`executor._validate_artifact`) is meaningful for every operation type.
+  Raised again to `[0.12.3, 1.0.0)` when `PRIMARY_CORRECTION`'s eight new parameters were added (ADR-18):
+  `--correct`'s `--gamma`/`--lift`/`--gain`/`--levels-*`/`--curves` flags do not exist in `color.py` before 0.12.3.

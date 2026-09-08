@@ -1,8 +1,9 @@
 # Decisions
 
-- **ADR-1 Execute through ffmpeg-skill only.** No direct ffmpeg. Missing capabilities (gamma, lift, gain, levels,
-  curves, and white balance as its own single operation type) are declared gaps (docs/ffmpeg-skill.md), never
-  worked around with a private ffmpeg call or a raw filter string.
+- **ADR-1 Execute through ffmpeg-skill only.** No direct ffmpeg. A missing capability (white balance as its own
+  single operation type; gamma/lift/gain/levels/curves were declared gaps here until ffmpeg-skill 0.12.3 added
+  typed `--correct` flags for them, ADR-18) is a declared gap (docs/ffmpeg-skill.md), never worked around with a
+  private ffmpeg call or a raw filter string.
 - **ADR-2 Envelope carries both `ok` and `status`.** Same shape as audio-production-skill: the ecosystem's error
   contract asks for `{ok, error{code, message, retryable}}`; media-analysis-skill uses `status: ok|partial|error`.
   Both are present and consistent; exit codes are per error code, starting at 2.
@@ -36,9 +37,10 @@
   result.
 - **ADR-9 Refuse rather than approximate.** A non-HDR source into `HDR_TO_SDR` without `force: true`, a non-`.cube`
   LUT, an output container that does not match the source, a request for a still-unimplemented correction
-  (`WHITE_BALANCE` as its own type, `GAMMA`, `LIFT`, `GAIN`, `LEVELS`, `CURVES`), or a `PRIMARY_CORRECTION` parameter
-  outside its declared safe range — each is an explicit `UNSUPPORTED_*` / `INVALID_*` error, never a best-effort
-  guess or a silently clamped value.
+  (`WHITE_BALANCE` as its own type), a `PRIMARY_CORRECTION` parameter outside its declared safe range, or a
+  `PRIMARY_CORRECTION.levels_in_black`/`levels_out_black` not strictly less than its matching
+  `levels_in_white`/`levels_out_white` (ADR-18) — each is an explicit `UNSUPPORTED_*` / `INVALID_*` error, never a
+  best-effort guess or a silently clamped value.
 - **ADR-10 Unknown is a capability status.** `filter:zscale` / `filter:tonemap` / `filter:lut3d` are core ffmpeg
   filters that ffmpeg-skill's own doctor *does* attempt to detect (unlike the audio filters audio-production-skill
   relies on), but the same FFmpeg ≥ 8.0 detection defect applies (docs/ffmpeg-skill.md): when it fires, every filter
@@ -53,14 +55,14 @@
   window rather than assume an untested version behaves the same); only the window itself moved when
   `PRIMARY_CORRECTION` was added (ADR-15).
 - **ADR-13 Declared but not implemented operations are a fixed, honest list.** `WHITE_BALANCE` (as its own single
-  operation type — see ADR-15), `GAMMA`, `LIFT`, `GAIN`, `LEVELS`, `CURVES` are declared in
-  `UNSUPPORTED_OPERATIONS` with the specific ffmpeg-skill gap that blocks each one; they raise
-  `UNSUPPORTED_OPERATION` at validation and never appear in `contract --json`'s `operations[]` (STEP 1 of the design
-  brief: only implemented operations are exposed as supported). Implementing any of them requires a corresponding
-  typed capability in ffmpeg-skill's public contract first (or a decision to add a second execution backend); this
-  skill will not grow a private `eq` / `colorbalance` / `curves` filter string to work around the gap. (`EXPOSURE`,
-  `CONTRAST`, `SATURATION`, `TEMPERATURE` and `TINT` were removed from this list when `PRIMARY_CORRECTION` absorbed
-  them, ADR-15.)
+  operation type — see ADR-15) is declared in `UNSUPPORTED_OPERATIONS` with the specific ffmpeg-skill gap that
+  blocks it; it raises `UNSUPPORTED_OPERATION` at validation and never appears in `contract --json`'s
+  `operations[]` (STEP 1 of the design brief: only implemented operations are exposed as supported). Implementing
+  it requires a single typed "white balance" capability in ffmpeg-skill's public contract first (or a decision to
+  add a second execution backend); this skill will not grow a private filter string to work around the gap.
+  (`EXPOSURE`, `CONTRAST`, `SATURATION`, `TEMPERATURE` and `TINT` were removed from this list when
+  `PRIMARY_CORRECTION` absorbed them, ADR-15; `GAMMA`, `LIFT`, `GAIN`, `LEVELS` and `CURVES` were removed the same
+  way when `PRIMARY_CORRECTION` absorbed their matching parameters, ADR-18.)
 - **ADR-14 A Windows-only ffmpeg-skill defect is worked around from this skill's own side, never by editing
   ffmpeg-skill.** Measured on Windows CI (docs/ffmpeg-skill.md): an absolute Windows LUT path's drive-letter colon,
   once escaped by ffmpeg-skill's own `escape_filter_path` for the `-vf lut3d=file=...` value, is rejected by at
@@ -103,8 +105,10 @@
     execution layer would be right to second-guess.
   - *White balance stays a declared gap as its own operation type.* No single "white balance" flag exists in
     ffmpeg-skill's contract — only the two independent `temperature`/`tint` parameters of `PRIMARY_CORRECTION` that
-    together achieve it (ADR-13). `GAMMA`/`LIFT`/`GAIN`/`LEVELS`/`CURVES` remain unimplemented for the same reason
-    as before: no corresponding typed ffmpeg-skill capability yet (docs/ffmpeg-skill.md).
+    together achieve it (ADR-13). (`GAMMA`/`LIFT`/`GAIN`/`LEVELS`/`CURVES` remained unimplemented for the same
+    reason at the time this ADR was written; ffmpeg-skill 0.12.3 later added typed `--correct` flags for all five,
+    and `PRIMARY_CORRECTION` absorbed them the same way it absorbed exposure/contrast/saturation/temperature/tint
+    here — see ADR-18.)
 - **ADR-16 `provides`: publish this Skill's five operations as cross-repository Capability ids.** Added for
   `kajisho5/AI-video-production-OS`'s `CapabilityContract.provides` (`docs/SPEC.md` there), so a registry can
   resolve "who provides `color.hdr_to_sdr`" without hardcoding this repository. `model.OPERATION_TYPES` has no
@@ -145,3 +149,38 @@
     `LUT_APPLY`/`PRIMARY_CORRECTION` once `dropped_non_av_streams` is real there too, which is 0.12.1. As with every
     prior window move, this is not per-operation: one located checkout is either compatible with everything this
     skill now emits, or `doctor`/`run` refuse it wholesale.
+- **ADR-18 `PRIMARY_CORRECTION` gains gamma, three-way lift/gain, levels and a curves preset, added via
+  ffmpeg-skill 0.12.3.** ffmpeg-skill 0.12.3 added five more typed `--correct` flags to `color.py`, on top of the
+  five `PRIMARY_CORRECTION` already covered (ADR-15): `--gamma` (`eq`'s own gamma option, 0.1..10, default 1),
+  `--lift`/`--gain` (three-way shadows/highlights via `colorbalance`'s shadow/highlight channels, -1..1 each,
+  default 0), `--levels-in-black`/`-white`/`--levels-out-black`/`-white` (`colorlevels`, 0..255 each, defaults
+  0/255/0/255 — ffmpeg-skill's own 8-bit-unit convention over the filter's native 0..1 range), and `--curves`
+  (the `curves` filter's ten built-in presets, `model.CURVES_PRESETS`, taken verbatim from ffmpeg-skill's own
+  `CURVES_PRESETS`; no default, curves is the one PRIMARY_CORRECTION field that stays `None` rather than an
+  identity number). All eight became additional optional parameters of the existing `PRIMARY_CORRECTION` operation
+  type — not five new operation types — because ffmpeg-skill itself expresses every one of them as one more option
+  on the same `--correct` invocation, in the same fixed filter chain (`exposure` → `colortemperature` →
+  `colorbalance` → `eq`, plus `colorlevels`/`curves` appended only when asked for); splitting them into separate
+  operation types would misrepresent that they are all one ffmpeg-skill call, not five independent tool
+  invocations.
+  - *Levels ordering is validated at the request boundary, not left to ffmpeg-skill alone.* `color.py --correct`
+    itself `die()`s when `levels_in_black >= levels_in_white` or `levels_out_black >= levels_out_white`;
+    `model._validate_levels_ordering` duplicates that exact check in `validate_parameters` so a bad request is an
+    `INVALID_REQUEST` before any ffmpeg-skill process starts, the same fail-fast posture as every other
+    `PRIMARY_CORRECTION` range check (ADR-15) and every other cross-field check in this skill (ADR-9).
+  - *`curves` is optional with no numeric default; every other new field always emits its flag.* `gamma`/`lift`/
+    `gain`/`levels_in_black`/`levels_in_white`/`levels_out_black`/`levels_out_white` each have an identity default
+    (1 / 0 / 0 / 0 / 255 / 0 / 255) and are always passed to `--correct`, matching how `exposure`/`contrast`/
+    `saturation`/`temperature`/`tint` are already always passed (ADR-15's "every stage in this dict is always
+    emitted" convention, restated in `color.py`'s own `CORRECTION` comment) — passing an identity value is
+    harmless because ffmpeg-skill's own filter chain treats it as a no-op. `curves` has no such identity value
+    (there is no "no curve" preset name); `executor._argv` only appends `--curves <preset>` when the caller set
+    one, mirroring `HDR_TO_SDR`'s `--force` (a flag only added when true) and ffmpeg-skill's own `color.py`
+    behaviour of only adding the `curves` filter term when `--curves` was actually given.
+  - *Measurement, not judgement, again.* Same posture as ADR-15: none of the eight new parameters gets a
+    discrete pass/fail check (there is no fixed "is gamma=1.2 correctly applied" target state); `measurements`
+    (ffmpeg-skill's existing `analyze_levels`) is the only before/after signal, unchanged by this addition.
+  - *Version window moves again.* `[0.12.1, 1.0.0)` (ADR-17) becomes `[0.12.3, 1.0.0)`: `--gamma`/`--lift`/
+    `--gain`/`--levels-*`/`--curves` do not exist in `color.py` before 0.12.3. As with every prior window move,
+    this is not per-operation: one located checkout is either compatible with everything `PRIMARY_CORRECTION` now
+    emits, or `doctor`/`run` refuse it wholesale with `ffmpeg_skill_incompatible`.

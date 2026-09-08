@@ -64,13 +64,14 @@ def skill_contract() -> Dict[str, Any]:
         "schema": CONTRACT_SCHEMA_ID, "skill_id": SKILL_ID, "id": SKILL_ID, "name": PACKAGE_NAME, "package": PACKAGE_NAME, "version": VERSION,
         "kind": "execution", "role": "colour grading / colour correction execution (processing); not decision, not measurement, not automatic look/LUT selection",
         "description": "Deterministic colour grading execution: HDR-to-SDR tone mapping, 3D .cube LUT application, colour-tag retagging, Dolby Vision RPU "
-                       "removal, and typed primary colour correction (exposure/contrast/saturation/white balance), executed as a typed operation graph through "
-                       "ffmpeg-skill's public contract, with output validation and provenance. Not an AI agent: it never decides which colour treatment, LUT or "
-                       "look to apply, nor which correction values to use.",
+                       "removal, and typed primary colour correction (exposure/contrast/saturation/white balance/gamma/lift/gain/levels/curves), executed as "
+                       "a typed operation graph through ffmpeg-skill's public contract, with output validation and provenance. Not an AI agent: it never "
+                       "decides which colour treatment, LUT or look to apply, nor which correction values to use.",
         "repository": "https://github.com/kajisho5/color-grading-skill",
         "not_provided": ["AI reasoning", "decisions", "production plans", "automatic colour grading", "automatic look selection", "automatic LUT selection",
-                         "image understanding", "scene/face detection", "shot matching", "gamma/lift/gain/levels/curves colour correction",
-                         "container/format conversion (ffmpeg-skill/export)", "arbitrary ffmpeg filters", "shell execution", "network access"],
+                         "image understanding", "scene/face detection", "shot matching", "a single white-balance operation type (use PRIMARY_CORRECTION's "
+                         "temperature and tint parameters)", "container/format conversion (ffmpeg-skill/export)", "arbitrary ffmpeg filters",
+                         "shell execution", "network access"],
         "tools": tools,
         "provides": capability_provides(),
         "operations": operation_specs(),

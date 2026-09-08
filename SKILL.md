@@ -1,6 +1,6 @@
 ---
 name: color-grading
-description: Deterministic colour grading / colour correction execution Skill for the AI Video Production Ecosystem. Use it when a caller (normally video-production-agent) has already decided which colour treatment to apply to a video and needs it executed safely - HDR (PQ/HLG, BT.2020) to SDR BT.709 tone mapping with an explicit curve, application of a 3D .cube LUT, rewriting colour tags (BT.709 / BT.2020 PQ / BT.2020 HLG / BT.601) without a re-encode, removing a Dolby Vision RPU, or typed primary colour correction (exposure, contrast, saturation, white balance via temperature + tint) - as a typed operation graph with validated outputs and provenance. Do NOT use it to decide which colour treatment, look, LUT or correction values to apply (video-production-agent), to measure or analyse media (media-analysis-skill), to edit video (video-editing-skill), or to run arbitrary ffmpeg commands or filters (it refuses them). It has no gamma, lift, gain, levels or curves correction: ffmpeg-skill has no typed filter for those yet.
+description: Deterministic colour grading / colour correction execution Skill for the AI Video Production Ecosystem. Use it when a caller (normally video-production-agent) has already decided which colour treatment to apply to a video and needs it executed safely - HDR (PQ/HLG, BT.2020) to SDR BT.709 tone mapping with an explicit curve, application of a 3D .cube LUT, rewriting colour tags (BT.709 / BT.2020 PQ / BT.2020 HLG / BT.601) without a re-encode, removing a Dolby Vision RPU, or typed primary colour correction (exposure, contrast, saturation, white balance via temperature + tint, gamma, three-way shadows/highlights via lift + gain, levels, or a curves preset) - as a typed operation graph with validated outputs and provenance. Do NOT use it to decide which colour treatment, look, LUT or correction values to apply (video-production-agent), to measure or analyse media (media-analysis-skill), to edit video (video-editing-skill), or to run arbitrary ffmpeg commands or filters (it refuses them). It has no single "white balance" operation type: use PRIMARY_CORRECTION's separate temperature/tint parameters instead.
 ---
 
 # color-grading
@@ -15,8 +15,10 @@ Rules for a calling agent:
    colour treatment to apply.
 2. Give explicit, typed parameters: `HDR_TO_SDR` needs nothing but has typed `tonemap`/`peak_nits`/`desat`/`force`;
    `LUT_APPLY` needs `lut_path`; `RETAG` needs `target`; `PRIMARY_CORRECTION` needs nothing but has typed
-   `exposure`/`contrast`/`saturation`/`temperature`/`tint`, each independently optional and defaulting to
-   unchanged. Tone-mapping curve and correction values are always the caller's, never automatic.
+   `exposure`/`contrast`/`saturation`/`temperature`/`tint`/`gamma`/`lift`/`gain`/`levels_in_black`/
+   `levels_in_white`/`levels_out_black`/`levels_out_white`/`curves`, each independently optional and defaulting to
+   unchanged (`curves` defaults to no preset). Tone-mapping curve and correction values are always the caller's,
+   never automatic.
 3. Never send commands, argv, filter strings or executable paths: the request is rejected. A LUT path is data,
    resolved through its own path policy and hashed into provenance; it is never a filter string.
 4. Keep outputs inside the workspace, never at the input path; set `overwrite: true` deliberately. An output's
