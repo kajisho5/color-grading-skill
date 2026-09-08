@@ -1,7 +1,7 @@
 # ffmpeg-skill relationship
 
 color-grading-skill is a client of ffmpeg-skill's **public contract** (`ffmpeg-skill contract --json`,
-`contract_version 1.0`, verified against ffmpeg-skill 0.9.2; earlier versions are not verified and are refused by
+`contract_version 1.0`, verified against ffmpeg-skill 0.12.1; earlier versions are not verified and are refused by
 the adapter's version window, the same posture audio-production-skill takes). It never calls `ffmpeg` or `ffprobe`
 itself.
 
@@ -10,21 +10,23 @@ itself.
 | ffmpeg-skill tool | used for | flags emitted |
 |---|---|---|
 | `ffmpeg-skill/probe` | source facts, every artifact's validation | positional `inputs` (one path) |
-| `ffmpeg-skill/color` | `HDR_TO_SDR` (`--to-sdr`), `LUT_APPLY` (`--lut`), `RETAG` (`--retag`), `STRIP_DOVI` (`--strip-dovi`), `PRIMARY_CORRECTION` (`--correct`) | `--to-sdr`, `--lut`, `--retag`, `--strip-dovi`, `--correct` (mutually exclusive, exactly one required — matches this skill's one-operation-per-node model exactly), `--tonemap`, `--peak`, `--desat`, `--force`, `--lut-strength`, `--exposure`, `--contrast`, `--saturation`, `--temperature`, `--tint`, `--crf`, `--preset`, `-o`, `--json` |
+| `ffmpeg-skill/color` | `HDR_TO_SDR` (`--to-sdr`), `LUT_APPLY` (`--lut`), `RETAG` (`--retag`), `STRIP_DOVI` (`--strip-dovi`), `PRIMARY_CORRECTION` (`--correct`) | `--to-sdr`, `--lut`, `--retag`, `--strip-dovi`, `--correct` (mutually exclusive, exactly one required — matches this skill's one-operation-per-node model exactly), `--tonemap`, `--peak`, `--desat`, `--force`, `--lut-strength`, `--exposure`, `--contrast`, `--saturation`, `--temperature`, `--tint`, `--audio-stream`, `--crf`, `--preset`, `-o`, `--json` |
 
 `doctor` checks that the located ffmpeg-skill declares `color` with `video_required: true` and that every flag
 listed above exists in the tool's generated `input_schema`; a mismatch is a `fail` and `run` refuses with
 `TOOL_ERROR` (`ffmpeg_skill_incompatible`).
 
-## Why 0.9.2
+## Why 0.12.1
 
 Every flag this skill emits was read directly from `scripts/color.py`'s argparse definition and confirmed present in
-`scripts/_contract.py --json --static`'s generated `input_schema` at ffmpeg-skill 0.9.2 (0.9.1 lacked `--correct`
-and its five parameter flags; PRIMARY_CORRECTION would fail with `ffmpeg_skill_incompatible` against it). Earlier
-versions were not inspected and are not claimed to work; the adapter's version window is therefore
-`[0.9.2, 1.0.0)`, the same convention audio-production-skill uses for its own dependency.
+`scripts/_contract.py --json --static`'s generated `input_schema` at ffmpeg-skill 0.12.1 (0.9.1 lacked `--correct`
+and its five parameter flags, so PRIMARY_CORRECTION raised the window to 0.9.2 first, docs/decisions.md ADR-15;
+`--audio-stream` does not exist in `color.py` before 0.12.0, and `--to-sdr`/`--lut`/`--correct` did not honestly
+report `dropped_non_av_streams` before 0.12.1 — RETAG's own `reencoded`/`dropped_non_av_streams` pair is 0.12.0,
+docs/decisions.md ADR-17). Earlier versions were not inspected and are not claimed to work; the adapter's version
+window is therefore `[0.12.1, 1.0.0)`, the same convention audio-production-skill uses for its own dependency.
 
-## Observed behaviour this skill relies on (measured by reading ffmpeg-skill 0.9.2's `scripts/color.py`)
+## Observed behaviour this skill relies on (measured by reading ffmpeg-skill 0.12.1's `scripts/color.py`)
 
 - `color.py` requires a video stream (`die("input has no video stream")` when `probe` reports none) and refuses to
   run without exactly one of `--to-sdr` / `--lut` / `--retag` / `--strip-dovi` / `--correct` (an argparse
@@ -61,9 +63,12 @@ versions were not inspected and are not claimed to work; the adapter's version w
   itself falls back to a re-encode (`x264_args(crf, preset, keep_bt709=False)`) only when the stream copy fails for
   a given codec/container combination. This skill's `RETAG` parameters carry no `crf`/`preset` (unlike
   `HDR_TO_SDR`/`LUT_APPLY`): the common case is a stream copy where they have no effect, and ffmpeg-skill's own
-  defaults (18 / medium) apply on the rare fallback. The four targets and their exact tag triples
-  (`color_space, color_primaries, color_transfer`) are ffmpeg-skill's own mapping, copied verbatim into
-  `model.RETAG_TAGS` and used again to verify the output.
+  defaults (18 / medium) apply on the rare fallback. `audio_stream` is different: `color.py` forwards it
+  (`-map 0:a:{audio_stream}?`) into that same re-encode fallback, so `RETAG` does carry `audio_stream` even though
+  it carries no `crf`/`preset` — on the common stream-copy path it has no effect (every audio track is kept, `-map
+  0`), same as `crf`/`preset`, but it is not simply irrelevant to `RETAG` the way they are. The four targets and
+  their exact tag triples (`color_space, color_primaries, color_transfer`) are ffmpeg-skill's own mapping, copied
+  verbatim into `model.RETAG_TAGS` and used again to verify the output.
 - `--strip-dovi` only applies to HEVC video (`die` otherwise) and is always a stream copy
   (`-bsf:v filter_units=remove_types=62 -tag:v hvc1`), removing the Dolby Vision RPU NAL unit; it does not require
   the input to already carry detected Dolby Vision side data (it warns and proceeds), but this skill still verifies
@@ -88,6 +93,26 @@ versions were not inspected and are not claimed to work; the adapter's version w
   `color_primaries` is `bt2020`, or Dolby Vision side data is present; `video.dolby_vision` is `null` or a dict with
   `profile`/`level`/`bl_compatibility_id`. This skill's `HDR_TO_SDR` / `STRIP_DOVI` validation reads exactly these
   two fields, never re-derives HDR-ness from raw tags itself.
+- **`--audio-stream N` (default 0, ffmpeg-skill >= 0.12.0)** selects which audio stream of a multi-track input to
+  keep, 0-based in file order; `color.py` validates it against `probe()`'s own `audio_streams` count and `die()`s on
+  an out-of-range value. It only affects paths that re-encode audio: `--to-sdr`/`--lut`/`--correct` always, and
+  `--retag`'s automatic re-encode fallback (`-map 0:a:{audio_stream}?`) — a successful `--retag` stream copy and
+  `--strip-dovi` both keep every audio track untouched (`-map 0`), so the flag has nothing to select for either,
+  and this skill does not accept an `audio_stream` parameter on `STRIP_DOVI`. This skill's `HDR_TO_SDR`/
+  `LUT_APPLY`/`RETAG`/`PRIMARY_CORRECTION` parameters all carry `audio_stream`, forwarded unchanged to
+  `--audio-stream`; ffmpeg-skill's own range check against the real stream count is the authority (this skill only
+  requires it to be a non-negative integer at the request boundary, since the real bound depends on the source).
+- **`reencoded` / `dropped_non_av_streams` (ffmpeg-skill >= 0.12.0/0.12.1).** `--retag`'s JSON output reports
+  `reencoded` (`true` when the stream-copy path failed and a re-encode fallback ran) and `dropped_non_av_streams`
+  (`true` only when even the subtitle/data-preserving re-encode failed and streams beyond video+audio had to be
+  dropped) since 0.12.0; `--to-sdr`/`--lut`/`--correct` gained `dropped_non_av_streams` the same way in 0.12.1 (they
+  always re-encode, so `reencoded` would be redundant there and is not reported). This skill carries both fields
+  (when present) onto `NodeState`, into every intermediate's manifest, and into the output provenance chain, the
+  same way `measurements` already is (`executor._execute_node`). `executor._validate_artifact` also independently
+  re-probes the output's `subtitle_streams`/`data_streams` counts against the source's whenever the source has any,
+  and raises `VALIDATION_ERROR` (`reason: stream_loss_unreported`) if a count fell without ffmpeg-skill having
+  reported `dropped_non_av_streams: true` for that call — the honest-drop case is surfaced, never hidden, but is not
+  itself treated as this skill's own failure; only an *unreported* loss is.
 - **`--lut` and a Windows drive-letter path.** `color.py` builds `lut3d=file=<escape_filter_path(args.lut)>:interp=
   tetrahedral` for the `-vf` filter graph. `escape_filter_path` backslash-escapes a colon (`C:\...` → `C\:/...`) so
   the graph-level parser does not treat it as a filter separator. **Measured** on a Windows CI runner (gyan.dev

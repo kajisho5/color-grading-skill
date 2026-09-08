@@ -118,3 +118,30 @@
   writes a validated video artifact through it. Additive: a new top-level `provides` key derived from
   `OPERATION_TYPES`, saying nothing `operations[]` doesn't already say, only indexed by Capability id instead of
   operation type.
+- **ADR-17 Surface ffmpeg-skill's `reencoded`/`dropped_non_av_streams` signal; add `audio_stream` (ffmpeg-skill
+  0.12.0/0.12.1); version window raised to `[0.12.1, 1.0.0)`.** ffmpeg-skill 0.12.0 gave `color.py --retag`'s
+  re-encode fallback an honest `reencoded`/`dropped_non_av_streams` pair in its `--json` output instead of a bare
+  `"completed"`, and 0.12.1 extended `dropped_non_av_streams` reporting to `--to-sdr`/`--lut`/`--correct` as well
+  (a source's subtitle/data streams are now kept through every re-encoding colour operation on a best-effort basis,
+  and the tool says so when it could not). This skill was discarding both fields (`executor._execute_node` only
+  ever read `measurements`); they are now carried onto `NodeState` the same way `measurements` already is, written
+  into every manifest and the output provenance chain, and reported (when not `None`) on every operation result.
+  - *An independent re-probe, not blind trust.* Matching this skill's existing posture (`RETAG`'s tag-triple
+    re-probe, ADR before this one), `executor._validate_artifact` re-probes the output's own `subtitle_streams`/
+    `data_streams` counts (via `ffmpeg-skill/probe`, the same call already made for every other check) and compares
+    them against the source's. A drop ffmpeg-skill itself reported (`dropped_non_av_streams: true`) is not an
+    error — the caller already sees it on the result — but a stream count that fell with no such report is a
+    `VALIDATION_ERROR` (`reason: stream_loss_unreported`): the scenario this skill's provenance philosophy exists to
+    catch, a tool reporting "completed" while something silently vanished.
+  - **`audio_stream` (ffmpeg-skill 0.12.0's `--audio-stream N`, default 0).** Added to `HDR_TO_SDR`/`LUT_APPLY`/
+    `RETAG`/`PRIMARY_CORRECTION`'s parameters (not `STRIP_DOVI`: its stream copy, like a successful `RETAG` stream
+    copy, keeps every audio track untouched, so the flag has nothing to select there) and threaded through
+    `executor._argv` to `--audio-stream` on every `ffmpeg-skill/color` invocation those four operations make,
+    including `RETAG`'s own re-encode fallback (`color.py` forwards it there too, unlike `crf`/`preset`). Default
+    `0` reproduces every prior release's behaviour exactly (always the first audio track); a multi-track source
+    (dubbed languages, M&E stems) can now name which track to keep instead of silently always getting track 0.
+  - *Version window moves again.* `[0.9.2, 1.0.0)` (ADR-15) becomes `[0.12.1, 1.0.0)`: `--audio-stream` does not
+    exist in `color.py` before 0.12.0, and the stream-survival check above is only meaningful for `HDR_TO_SDR`/
+    `LUT_APPLY`/`PRIMARY_CORRECTION` once `dropped_non_av_streams` is real there too, which is 0.12.1. As with every
+    prior window move, this is not per-operation: one located checkout is either compatible with everything this
+    skill now emits, or `doctor`/`run` refuse it wholesale.

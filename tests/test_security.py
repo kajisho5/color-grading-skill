@@ -196,17 +196,17 @@ def test_argv_builder_uses_only_fixed_flags_numbers_enums_and_resolved_paths(wor
 
     from color_grading.executor import LutInfo, NodeState
 
-    hdr_node = Node("op:h", "HDR_TO_SDR", ["source"], {"tonemap": "hable", "peak_nits": 1000.0, "desat": 0.0, "force": True, "crf": 18, "preset": "medium"})
+    hdr_node = Node("op:h", "HDR_TO_SDR", ["source"], {"tonemap": "hable", "peak_nits": 1000.0, "desat": 0.0, "force": True, "crf": 18, "preset": "medium", "audio_stream": 0})
     hdr_st = NodeState(hdr_node)
-    lut_node = Node("op:l", "LUT_APPLY", ["source"], {"lut_path": "x.cube", "lut_strength": 0.75, "crf": 20, "preset": "slow"})
+    lut_node = Node("op:l", "LUT_APPLY", ["source"], {"lut_path": "x.cube", "lut_strength": 0.75, "crf": 20, "preset": "slow", "audio_stream": 1})
     lut_st = NodeState(lut_node)
     lut_st.lut = LutInfo(Path(lut_path), 100, "0" * 64)
-    retag_node = Node("op:r", "RETAG", ["source"], {"target": "bt601"})
+    retag_node = Node("op:r", "RETAG", ["source"], {"target": "bt601", "audio_stream": 2})
     retag_st = NodeState(retag_node)
     dovi_node = Node("op:d", "STRIP_DOVI", ["source"], {})
     dovi_st = NodeState(dovi_node)
     correction_node = Node("op:c", "PRIMARY_CORRECTION", ["source"],
-                           {"exposure": 0.5, "contrast": 1.1, "saturation": 0.9, "temperature": 5600.0, "tint": -0.2, "crf": 18, "preset": "medium"})
+                           {"exposure": 0.5, "contrast": 1.1, "saturation": 0.9, "temperature": 5600.0, "tint": -0.2, "crf": 18, "preset": "medium", "audio_stream": 3})
     correction_st = NodeState(correction_node)
 
     src = str((workspace / "sdr.mp4").resolve())
@@ -225,9 +225,10 @@ def test_argv_builder_uses_only_fixed_flags_numbers_enums_and_resolved_paths(wor
         for a in argv:
             assert flag_or_enum.match(a) or num.match(a) or os.path.isabs(a) or bare_name.match(a), (st.node.type, a)
 
-    assert ex._argv(hdr_st, src, out) == [src, "--to-sdr", "--tonemap", "hable", "--peak", "1000.0000", "--desat", "0.0000", "--force", "--crf", "18", "--preset", "medium", "-o", str(out)]
-    assert ex._argv(lut_st, src, out) == [src, "--lut", "invert.cube", "--lut-strength", "0.7500", "--crf", "20", "--preset", "slow", "-o", str(out)]
-    assert ex._argv(retag_st, src, out) == [src, "--retag", "bt601", "-o", str(out)]
+    assert ex._argv(hdr_st, src, out) == [src, "--to-sdr", "--tonemap", "hable", "--peak", "1000.0000", "--desat", "0.0000", "--force",
+                                          "--audio-stream", "0", "--crf", "18", "--preset", "medium", "-o", str(out)]
+    assert ex._argv(lut_st, src, out) == [src, "--lut", "invert.cube", "--lut-strength", "0.7500", "--audio-stream", "1", "--crf", "20", "--preset", "slow", "-o", str(out)]
+    assert ex._argv(retag_st, src, out) == [src, "--retag", "bt601", "--audio-stream", "2", "-o", str(out)]
     assert ex._argv(dovi_st, src, out) == [src, "--strip-dovi", "-o", str(out)]
     assert ex._argv(correction_st, src, out) == [src, "--correct", "--exposure", "0.5000", "--contrast", "1.1000", "--saturation", "0.9000",
-                                                  "--temperature", "5600.0000", "--tint", "-0.2000", "--crf", "18", "--preset", "medium", "-o", str(out)]
+                                                  "--temperature", "5600.0000", "--tint", "-0.2000", "--audio-stream", "3", "--crf", "18", "--preset", "medium", "-o", str(out)]

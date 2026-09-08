@@ -91,6 +91,8 @@ class NodeState:
     seconds: float = 0.0
     tool_commands: List[str] = field(default_factory=list)
     measurements: Dict[str, Any] = field(default_factory=dict)
+    reencoded: Optional[bool] = None               # ffmpeg-skill/color's own "did I have to re-encode" signal (RETAG only; >= 0.12.0)
+    dropped_non_av_streams: Optional[bool] = None  # ffmpeg-skill/color's own "did I drop subtitle/data streams" signal (>= 0.12.0)
     error: Optional[Dict[str, Any]] = None
     input_hash: Optional[str] = None
 
@@ -104,6 +106,10 @@ class NodeState:
             d["lut"] = self.lut.to_dict()
         d["tool_commands_observed"] = list(self.tool_commands)
         d["measurements"] = self.measurements
+        if self.reencoded is not None:
+            d["reencoded"] = self.reencoded
+        if self.dropped_non_av_streams is not None:
+            d["dropped_non_av_streams"] = self.dropped_non_av_streams
         if self.error:
             d["error"] = self.error
         return d
@@ -254,7 +260,8 @@ class Executor:
                 "has_video": bool(video), "has_audio": bool(meta.get("audio")), "width": video.get("width"), "height": video.get("height"),
                 "pix_fmt": video.get("pix_fmt"), "codec": video.get("codec"), "color_space": video.get("color_space"),
                 "color_primaries": video.get("color_primaries"), "color_transfer": video.get("color_transfer"), "color_range": video.get("color_range"),
-                "hdr": bool(video.get("hdr")), "dolby_vision": bool(video.get("dolby_vision"))}
+                "hdr": bool(video.get("hdr")), "dolby_vision": bool(video.get("dolby_vision")),
+                "subtitle_streams": int(meta.get("subtitle_streams") or 0), "data_streams": int(meta.get("data_streams") or 0)}
 
     @staticmethod
     def _source_artifact(path: Path, source: Dict[str, Any]) -> Artifact:
@@ -303,20 +310,21 @@ class Executor:
             args = [src, "--to-sdr", "--tonemap", p["tonemap"], "--peak", fmt_num(p["peak_nits"]), "--desat", fmt_num(p["desat"])]
             if p["force"]:
                 args.append("--force")
-            args += ["--crf", str(p["crf"]), "--preset", p["preset"], "-o", o]
+            args += ["--audio-stream", str(p["audio_stream"]), "--crf", str(p["crf"]), "--preset", p["preset"], "-o", o]
             return args
         if node.type == "LUT_APPLY":
             assert st.lut is not None
-            args = [src, "--lut", self._lut_arg(st.lut.path), "--lut-strength", fmt_num(p["lut_strength"]), "--crf", str(p["crf"]), "--preset", p["preset"], "-o", o]
+            args = [src, "--lut", self._lut_arg(st.lut.path), "--lut-strength", fmt_num(p["lut_strength"]),
+                    "--audio-stream", str(p["audio_stream"]), "--crf", str(p["crf"]), "--preset", p["preset"], "-o", o]
             return args
         if node.type == "RETAG":
-            return [src, "--retag", p["target"], "-o", o]
+            return [src, "--retag", p["target"], "--audio-stream", str(p["audio_stream"]), "-o", o]
         if node.type == "STRIP_DOVI":
             return [src, "--strip-dovi", "-o", o]
         if node.type == "PRIMARY_CORRECTION":
             return [src, "--correct", "--exposure", fmt_num(p["exposure"]), "--contrast", fmt_num(p["contrast"]),
                     "--saturation", fmt_num(p["saturation"]), "--temperature", fmt_num(p["temperature"]), "--tint", fmt_num(p["tint"]),
-                    "--crf", str(p["crf"]), "--preset", p["preset"], "-o", o]
+                    "--audio-stream", str(p["audio_stream"]), "--crf", str(p["crf"]), "--preset", p["preset"], "-o", o]
         raise ColorError("INTERNAL_ERROR", f"no argv builder for {node.type}")
 
     @staticmethod
@@ -366,13 +374,18 @@ class Executor:
             st.tool_commands += run.commands
             if isinstance(run.data.get("measurements"), dict):
                 st.measurements = dict(run.data["measurements"])
+            if "reencoded" in run.data:
+                st.reencoded = bool(run.data["reencoded"])
+            if "dropped_non_av_streams" in run.data:
+                st.dropped_non_av_streams = bool(run.data["dropped_non_av_streams"])
             st.artifact = self._validate_artifact(out_path, st, source)
         except ColorError:
             self._remove_partial(out_path)
             raise
         manifest.write_text(json.dumps({"schema": MANIFEST_SCHEMA, "operation_id": st.identity, "type": node.type, "parameters": node.parameters,
                                         "input_hash": st.input_hash, "lut": st.lut.to_dict() if st.lut else None, "artifact": st.artifact.to_dict(),
-                                        "measurements": st.measurements, "tool": f"ffmpeg-skill/{st.tool}", "tool_versions": dict(self.tool_versions),
+                                        "measurements": st.measurements, "reencoded": st.reencoded, "dropped_non_av_streams": st.dropped_non_av_streams,
+                                        "tool": f"ffmpeg-skill/{st.tool}", "tool_versions": dict(self.tool_versions),
                                         "skill": SKILL_ID, "skill_version": VERSION}, indent=2, sort_keys=True), encoding="utf-8")
         st.status = "completed"
 
@@ -392,6 +405,8 @@ class Executor:
                                art.get("color_space"), art.get("color_primaries"), art.get("color_transfer"), art.get("color_range"),
                                bool(art.get("hdr")), bool(art.get("dolby_vision")), int(art["size"]), art["sha256"])
         st.measurements = dict(m.get("measurements") or {})
+        st.reencoded = m.get("reencoded")
+        st.dropped_non_av_streams = m.get("dropped_non_av_streams")
         st.tool_commands = []
         return True
 
@@ -444,6 +459,19 @@ class Executor:
                                  {"reason": "retag_mismatch", "path": str(path), "got": list(got), "want": [want_space, want_prim, want_trc]})
         if st.node.type == "LUT_APPLY" and video.get("pix_fmt") != "yuv420p":
             raise ColorError("VALIDATION_ERROR", f"{what}: output pixel format {video.get('pix_fmt')!r} is not 'yuv420p'", {"reason": "pix_fmt_mismatch", "path": str(path)})
+        # subtitle/data-stream survival: ffmpeg-skill >= 0.12.1 tries to keep a source's subtitle/data streams
+        # through every re-encoding colour operation and says so honestly (dropped_non_av_streams) when it could
+        # not; independently re-probing the output (rather than trusting that flag alone) catches the case this
+        # skill's own philosophy exists for -- a tool reporting "completed" while a stream silently vanished.
+        src_subs, src_data = int(source.get("subtitle_streams") or 0), int(source.get("data_streams") or 0)
+        if src_subs or src_data:
+            out_subs, out_data = int(meta.get("subtitle_streams") or 0), int(meta.get("data_streams") or 0)
+            if (out_subs < src_subs or out_data < src_data) and not st.dropped_non_av_streams:
+                raise ColorError("VALIDATION_ERROR",
+                                 f"{what}: source had {src_subs} subtitle stream(s)/{src_data} data stream(s) but output has {out_subs}/{out_data}, "
+                                 "and ffmpeg-skill did not report dropping them",
+                                 {"reason": "stream_loss_unreported", "path": str(path), "source_subtitle_streams": src_subs, "output_subtitle_streams": out_subs,
+                                  "source_data_streams": src_data, "output_data_streams": out_data})
         return Artifact(path, duration, int(width or 0), int(height or 0), video.get("pix_fmt"), video.get("codec"),
                         video.get("color_space"), video.get("color_primaries"), video.get("color_transfer"), video.get("color_range"),
                         hdr, dolby_vision, size, sha256_file(str(path)))
@@ -514,6 +542,10 @@ class Executor:
                 entry["lut"] = s.lut.to_dict()
             if s.measurements:
                 entry["measurements"] = s.measurements
+            if s.reencoded is not None:
+                entry["reencoded"] = s.reencoded
+            if s.dropped_non_av_streams is not None:
+                entry["dropped_non_av_streams"] = s.dropped_non_av_streams
             chain.append(entry)
             stack.extend(self._states.get(i) for i in s.node.inputs if self._states.get(i) is not None)
         return chain

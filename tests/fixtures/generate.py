@@ -12,6 +12,12 @@ ffmpeg directly; the skill under test never does. Every fixture has a known cons
                 to not always reach libx265's VUI signalling on every platform/build (measured: absent on a Windows
                 CI runner's ffmpeg, present on Linux/macOS for the same command) -- the bsf is unconditionally
                 reliable since it edits the bitstream itself
+  sdr_with_subs.mp4  same video+audio as sdr.mp4 plus one soft `mov_text` subtitle track (muxed from a synthetic
+                .srt), for exercising ffmpeg-skill >= 0.12.1's subtitle-stream-preservation behaviour and this
+                skill's own subtitle-survival check (executor._validate_artifact)
+  multi_audio.mp4  same video as sdr.mp4 (2 s) with two distinguishable audio streams instead of one: stream 0 is
+                mono, stream 1 is stereo (different `channels`, deterministically verifiable via ffprobe) -- for
+                exercising `--audio-stream N` selection
   audio.wav     2 s mono PCM tone, no video stream (audio-only)
   text.txt      not media
   invert.cube   a 3D LUT (size 2) that exactly inverts every channel (output = 1 - input); trilinear/tetrahedral
@@ -68,10 +74,20 @@ def build_all(directory: Path) -> Dict[str, Path]:
     d = Path(directory)
     d.mkdir(parents=True, exist_ok=True)
     f = {k: d / v for k, v in {"sdr": "sdr.mp4", "sdr_noaudio": "sdr_noaudio.mp4", "hevc_sdr": "hevc_sdr.mp4", "hdr": "hdr.mp4",
+                               "sdr_with_subs": "sdr_with_subs.mp4", "multi_audio": "multi_audio.mp4",
                                "audio": "audio.wav", "text": "text.txt", "invert_cube": "invert.cube"}.items()}
     _run(["-f", "lavfi", "-i", SOLID, "-f", "lavfi", "-i", f"aevalsrc='{TONE}':s=48000", "-t", "3",
           "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(f["sdr"])])
     _run(["-f", "lavfi", "-i", SOLID, "-t", "2", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(f["sdr_noaudio"])])
+    srt_path = d / "_subs.srt"
+    srt_path.write_text("1\n00:00:00,000 --> 00:00:01,000\nsubtitle fixture\n\n", encoding="utf-8")
+    _run(["-i", str(f["sdr"]), "-i", str(srt_path), "-map", "0:v", "-map", "0:a", "-map", "1:s",
+          "-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text", str(f["sdr_with_subs"])])
+    srt_path.unlink()
+    _run(["-f", "lavfi", "-i", SOLID, "-f", "lavfi", "-i", f"aevalsrc='{TONE}':s=48000:c=mono",
+          "-f", "lavfi", "-i", "aevalsrc='0.1*sin(2*PI*1500*t)|0.1*sin(2*PI*1500*t)':s=48000:c=stereo",
+          "-t", "2", "-map", "0:v", "-map", "1:a", "-map", "2:a",
+          "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(f["multi_audio"])])
     _run(["-f", "lavfi", "-i", SOLID, "-t", "2", "-c:v", "libx265", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-tag:v", "hvc1", str(f["hevc_sdr"])])
     hdr_base = d / "_hdr_base.mp4"
     _run(["-f", "lavfi", "-i", SOLID, "-t", "2", "-c:v", "libx265", "-preset", "veryfast", "-pix_fmt", "yuv420p10le", "-tag:v", "hvc1", str(hdr_base)])
