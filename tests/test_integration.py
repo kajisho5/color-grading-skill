@@ -36,6 +36,17 @@ def probe(path):
            "color_primaries": v.get("color_primaries"), "color_transfer": v.get("color_transfer")}
 
 
+def stream_counts(path):
+    """(subtitle_stream_count, data_stream_count, audio_channels_of_first_audio_stream_or_None) via a plain
+    ffprobe call -- independent of both ffmpeg-skill's probe.py and this skill's own adapter."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", str(path)], capture_output=True, text=True, check=True)
+    streams = json.loads(r.stdout)["streams"]
+    subs = sum(1 for s in streams if s["codec_type"] == "subtitle")
+    data = sum(1 for s in streams if s["codec_type"] in ("data", "attachment"))
+    audio = [s for s in streams if s["codec_type"] == "audio"]
+    return subs, data, (audio[0].get("channels") if audio else None)
+
+
 def op(op_id, typ, ref, **params):
     return {"op_id": op_id, "type": typ, "input": ref, "parameters": params}
 
@@ -197,6 +208,102 @@ def test_primary_correction_invalid_parameter_type_rejected(workspace):
     doc["project"]["operations"][0]["parameters"]["exposure"] = "1.0"
     code, d = run(doc)
     assert d["ok"] is False and d["error"]["code"] == "INVALID_REQUEST" and code == EXIT_CODES["INVALID_REQUEST"]
+
+
+
+# ---- reencoded / dropped_non_av_streams surfaced from ffmpeg-skill (>= 0.12.0/0.12.1), audio_stream (>= 0.12.0)
+def test_retag_surfaces_reencoded_and_dropped_flags_and_keeps_subtitles(workspace):
+    """RETAG's stream-copy path on an untagged source succeeds without a re-encode: ffmpeg-skill reports
+    reencoded=False, dropped_non_av_streams=False, and the source's subtitle track survives untouched."""
+    src_subs, src_data, _ = stream_counts(workspace / "sdr_with_subs.mp4")
+    assert src_subs == 1
+    doc = request_doc([op("r", "RETAG", "source", target="bt709")], source={"source_id": "a", "path": "sdr_with_subs.mp4"})
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    r = results(d)["op:r"]
+    assert r["reencoded"] is False and r["dropped_non_av_streams"] is False
+    out_subs, out_data, _ = stream_counts(workspace / "out" / "main.mp4")
+    assert out_subs == src_subs and out_data == src_data
+    # the manifest on disk carries the same two fields (mirrors how `measurements` is already persisted)
+    manifest = next(workspace.glob(".color-grading/p1/*.json"))
+    m = json.loads(manifest.read_text())
+    assert m["reencoded"] is False and m["dropped_non_av_streams"] is False
+    # and the output's provenance chain carries them too
+    prov_entry = next(o for o in d["outputs"][0]["provenance"]["operations"] if o["type"] == "RETAG")
+    assert prov_entry["reencoded"] is False and prov_entry["dropped_non_av_streams"] is False
+
+
+def test_primary_correction_keeps_subtitles_and_reports_not_dropped(workspace):
+    """PRIMARY_CORRECTION always re-encodes (unlike RETAG's common stream-copy path); ffmpeg-skill still keeps the
+    source's subtitle track and reports dropped_non_av_streams=False (no top-level `reencoded` field for this mode
+    -- it isn't conditional the way RETAG's is)."""
+    src_subs, _, _ = stream_counts(workspace / "sdr_with_subs.mp4")
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source")], source={"source_id": "a", "path": "sdr_with_subs.mp4"})
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    r = results(d)["op:c"]
+    assert r["dropped_non_av_streams"] is False
+    assert "reencoded" not in r
+    out_subs, _, _ = stream_counts(workspace / "out" / "main.mp4")
+    assert out_subs == src_subs == 1
+
+
+def test_strip_dovi_has_no_reencoded_or_dropped_fields(workspace):
+    """STRIP_DOVI's --strip-dovi mode never reports reencoded/dropped_non_av_streams (it is always a full stream
+    copy, -map 0); this skill must not invent values for a field ffmpeg-skill never sent."""
+    doc = request_doc([op("d", "STRIP_DOVI", "source")], source={"source_id": "a", "path": "hevc_sdr.mp4"})
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    r = results(d)["op:d"]
+    assert "reencoded" not in r and "dropped_non_av_streams" not in r
+
+
+def test_audio_stream_selects_the_requested_track(workspace):
+    """--audio-stream 1 (ffmpeg-skill >= 0.12.0) keeps the *second* audio track of a multi-track source instead of
+    always defaulting to track 0; multi_audio.mp4's two tracks are deterministically distinguishable (mono vs
+    stereo channel count) so the selection is verified, not assumed."""
+    _, _, default_channels = stream_counts(workspace / "multi_audio.mp4")
+    assert default_channels == 1   # track 0 is mono
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", audio_stream=1)], source={"source_id": "a", "path": "multi_audio.mp4"})
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    _, _, out_channels = stream_counts(workspace / "out" / "main.mp4")
+    assert out_channels == 2   # track 1 (stereo) was kept, not the default track 0
+    # the default (audio_stream unset) keeps track 0, matching every prior release's behaviour
+    code, d2 = run(request_doc([op("c", "PRIMARY_CORRECTION", "source")], source={"source_id": "a", "path": "multi_audio.mp4"}))
+    assert code == 0 and d2["ok"], full_error(d2)
+    _, _, out_channels_default = stream_counts(workspace / "out" / "main.mp4")
+    assert out_channels_default == 1
+
+
+def test_audio_stream_default_is_zero_and_out_of_range_rejected_by_ffmpeg_skill(workspace):
+    """audio_stream isn't range-checked against the real stream count by this skill (the bound depends on the
+    source, which is ffmpeg-skill's own job, docs/ffmpeg-skill.md); an out-of-range value is refused by
+    ffmpeg-skill itself as a TOOL_ERROR, not silently accepted."""
+    from color_grading.model import validate_parameters
+    assert validate_parameters("RETAG", {"target": "bt709"}, "x")["audio_stream"] == 0
+    doc = request_doc([op("r", "RETAG", "source", target="bt709", audio_stream=5)], source={"source_id": "a", "path": "sdr.mp4"})
+    code, d = run(doc)
+    assert d["ok"] is False and d["error"]["code"] == "TOOL_ERROR"
+
+
+def test_audio_stream_negative_rejected_at_request_boundary(workspace):
+    doc = request_doc([op("r", "RETAG", "source", target="bt709", audio_stream=-1)])
+    code, d = run(doc)
+    assert d["ok"] is False and d["error"]["code"] == "INVALID_REQUEST" and code == EXIT_CODES["INVALID_REQUEST"]
+
+
+def test_audio_stream_reaches_the_real_ffmpeg_invocation_for_lut_apply(workspace):
+    """LUT_APPLY always re-encodes, so ffmpeg-skill/color literally builds `-map 0:a:{audio_stream}?` into the
+    ffmpeg command it runs; tool_commands_observed (ffmpeg-skill's own record of what it actually ran, not this
+    skill's argv construction) is checked directly for that exact mapping."""
+    doc = request_doc([op("l", "LUT_APPLY", "source", lut_path="invert.cube", audio_stream=1)], source={"source_id": "a", "path": "multi_audio.mp4"})
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    cmds = results(d)["op:l"]["tool_commands_observed"]
+    assert cmds and any("0:a:1" in c for c in cmds), cmds
+    _, _, out_channels = stream_counts(workspace / "out" / "main.mp4")
+    assert out_channels == 2
 
 
 def test_chained_pipeline_primary_correction_then_lut(workspace):

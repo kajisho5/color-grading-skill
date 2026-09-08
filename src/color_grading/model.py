@@ -72,20 +72,33 @@ _ENCODE_PARAMS: Dict[str, Dict[str, Any]] = {
     "preset": {"type": _STR, "required": False, "enum": list(X264_PRESETS), "default": "medium", "description": "x264 encoding speed/efficiency preset"},
 }
 
+# which audio stream of a multi-audio-track input to keep (ffmpeg-skill/color --audio-stream, >= 0.12.0), 0-based in
+# file order; default 0 matches every prior release's unconditional behaviour (always the first track). Unlike
+# crf/preset, this DOES apply to RETAG: color.py forwards --audio-stream to RETAG's automatic re-encode fallback
+# (`-map 0:a:{audio_stream}?`) even though crf/preset there still use ffmpeg-skill's own defaults; a successful
+# RETAG stream-copy and STRIP_DOVI's stream copy both keep every audio track untouched (`-map 0`), so the flag has
+# nothing to select for STRIP_DOVI and is not offered there.
+_AUDIO_STREAM_PARAM: Dict[str, Dict[str, Any]] = {
+    "audio_stream": {"type": _INT, "required": False, "min": 0, "default": 0,
+                      "description": "which audio stream of the input to keep, 0-based in file order; matters on a multi-track "
+                                     "input (dubbed languages, M&E stems) -- only affects paths that re-encode audio"},
+}
+
 OPERATION_TYPES: Dict[str, Dict[str, Any]] = {
     "HDR_TO_SDR": {"description": "Tone-map HDR (PQ/HLG, BT.2020) to SDR BT.709 (ffmpeg-skill/color --to-sdr)", "parameters": {
         "tonemap": {"type": _STR, "required": False, "enum": list(TONEMAPS), "default": "hable", "description": "tone-mapping curve"},
         "peak_nits": {"type": _NUM, "required": False, "min": 1.0, "max": 10000.0, "default": 1000.0, "description": "source peak brightness in nits, used for PQ"},
         "desat": {"type": _NUM, "required": False, "min": 0.0, "max": 5.0, "default": 0.0, "description": "tonemap desaturation strength"},
         "force": {"type": _BOOL, "required": False, "default": False, "description": "tone-map even if the source is not tagged HDR (treat as PQ)"},
-        **_ENCODE_PARAMS}},
+        **_ENCODE_PARAMS, **_AUDIO_STREAM_PARAM}},
     "LUT_APPLY": {"description": "Apply a 3D .cube LUT (ffmpeg-skill/color --lut); LUT is data, resolved and hashed by this skill, never a filter string", "parameters": {
         "lut_path": {"type": _STR, "required": True, "description": "path to a .cube LUT file, resolved through the LUT PathPolicy"},
         "lut_strength": {"type": _NUM, "required": False, "min": 0.0, "max": 1.0, "default": 1.0, "description": "blend of the LUT result with the original, 0..1 "
                           "(ffmpeg-skill applies the LUT at full strength for both 0.0 and 1.0; only a value strictly between them blends, see docs/ffmpeg-skill.md)"},
-        **_ENCODE_PARAMS}},
+        **_ENCODE_PARAMS, **_AUDIO_STREAM_PARAM}},
     "RETAG": {"description": "Rewrite colour tags only, no re-encode when the container allows it (ffmpeg-skill/color --retag)", "parameters": {
-        "target": {"type": _STR, "required": True, "enum": list(RETAG_TARGETS), "description": "colour tag set to write"}}},
+        "target": {"type": _STR, "required": True, "enum": list(RETAG_TARGETS), "description": "colour tag set to write"},
+        **_AUDIO_STREAM_PARAM}},
     "STRIP_DOVI": {"description": "Remove the Dolby Vision RPU (profile 8.4 clips), keeping the HLG/HDR10 base layer; stream copy (ffmpeg-skill/color --strip-dovi)", "parameters": {}},
     "PRIMARY_CORRECTION": {"description": "Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint) "
                            "(ffmpeg-skill/color --correct, requires ffmpeg-skill >= 0.9.2); each parameter is one option of one real ffmpeg filter "
@@ -95,7 +108,7 @@ OPERATION_TYPES: Dict[str, Dict[str, Any]] = {
         "saturation": {"type": _NUM, "required": False, "min": 0.0, "max": 2.0, "default": 1.0, "description": "saturation; 1 is unchanged, 0 is grayscale, 2 is double saturation"},
         "temperature": {"type": _NUM, "required": False, "min": 2000.0, "max": 12000.0, "default": 6500.0, "description": "white-balance temperature in Kelvin; 6500 is unchanged"},
         "tint": {"type": _NUM, "required": False, "min": -1.0, "max": 1.0, "default": 0.0, "description": "green(-1)/magenta(+1) tint; 0 is unchanged"},
-        **_ENCODE_PARAMS}},
+        **_ENCODE_PARAMS, **_AUDIO_STREAM_PARAM}},
 }
 
 # declared, not implemented: ffmpeg-skill's public contract has no typed filter for these (docs/ffmpeg-skill.md).

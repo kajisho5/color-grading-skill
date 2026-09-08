@@ -58,8 +58,9 @@ actually runs FFmpeg. Full boundary, including how this differs from `media-anal
 ## Quick start
 
 Requirements: Python 3.9+ (standard library only), an
-[ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) checkout (0.9.2 ≤ version < 1.0, for `PRIMARY_CORRECTION`'s
-`--correct`), and `ffmpeg` / `ffprobe` on `PATH` for ffmpeg-skill itself.
+[ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) checkout (0.12.1 ≤ version < 1.0, for `--audio-stream` and
+honest `dropped_non_av_streams` reporting across every colour operation), and `ffmpeg` / `ffprobe` on `PATH` for
+ffmpeg-skill itself.
 
 ```bash
 # 1. install this skill

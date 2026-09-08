@@ -23,7 +23,7 @@ def test_valid_request_parses():
     req = parse_request(doc)
     assert req.project.project_id == "p1"
     assert req.project.operations[0].type == "RETAG"
-    assert req.project.operations[0].parameters == {"target": "bt709"}
+    assert req.project.operations[0].parameters == {"target": "bt709", "audio_stream": 0}
 
 
 def test_unknown_schema_rejected():
@@ -142,7 +142,7 @@ def test_too_many_operations_rejected():
 # ---- parameter validation per operation type
 def test_hdr_to_sdr_defaults():
     p = validate_parameters("HDR_TO_SDR", {}, "x")
-    assert p == {"tonemap": "hable", "peak_nits": 1000.0, "desat": 0.0, "force": False, "crf": 18, "preset": "medium"}
+    assert p == {"tonemap": "hable", "peak_nits": 1000.0, "desat": 0.0, "force": False, "crf": 18, "preset": "medium", "audio_stream": 0}
 
 
 def test_hdr_to_sdr_unknown_tonemap_rejected():
@@ -174,7 +174,7 @@ def test_lut_apply_requires_lut_path():
 
 def test_retag_requires_target_enum():
     p = validate_parameters("RETAG", {"target": "bt2020-hlg"}, "x")
-    assert p == {"target": "bt2020-hlg"}
+    assert p == {"target": "bt2020-hlg", "audio_stream": 0}
     with pytest.raises(ColorError):
         validate_parameters("RETAG", {"target": "bogus"}, "x")
     with pytest.raises(ColorError):
@@ -185,6 +185,30 @@ def test_strip_dovi_takes_no_parameters():
     assert validate_parameters("STRIP_DOVI", {}, "x") == {}
     with pytest.raises(ColorError):
         validate_parameters("STRIP_DOVI", {"crf": 18}, "x")
+    # STRIP_DOVI is always a full stream copy (-map 0): audio_stream has nothing to select, so it is not offered
+    with pytest.raises(ColorError):
+        validate_parameters("STRIP_DOVI", {"audio_stream": 0}, "x")
+
+
+# ---- audio_stream (ffmpeg-skill >= 0.12.0 --audio-stream): HDR_TO_SDR/LUT_APPLY/RETAG/PRIMARY_CORRECTION only
+@pytest.mark.parametrize("typ,extra", [("HDR_TO_SDR", {}), ("LUT_APPLY", {"lut_path": "x.cube"}), ("RETAG", {"target": "bt709"}), ("PRIMARY_CORRECTION", {})])
+def test_audio_stream_defaults_to_zero_on_every_applicable_operation(typ, extra):
+    assert validate_parameters(typ, extra, "x")["audio_stream"] == 0
+
+
+def test_audio_stream_accepts_a_positive_index():
+    assert validate_parameters("RETAG", {"target": "bt709", "audio_stream": 3}, "x")["audio_stream"] == 3
+
+
+def test_audio_stream_negative_rejected():
+    with pytest.raises(ColorError) as e:
+        validate_parameters("RETAG", {"target": "bt709", "audio_stream": -1}, "x")
+    assert e.value.code == "INVALID_REQUEST"
+
+
+def test_audio_stream_non_integer_rejected():
+    with pytest.raises(ColorError):
+        validate_parameters("RETAG", {"target": "bt709", "audio_stream": 1.5}, "x")
 
 
 def test_preset_enum_rejects_unknown():
@@ -194,7 +218,7 @@ def test_preset_enum_rejects_unknown():
 
 def test_primary_correction_defaults_are_identity():
     p = validate_parameters("PRIMARY_CORRECTION", {}, "x")
-    assert p == {"exposure": 0.0, "contrast": 1.0, "saturation": 1.0, "temperature": 6500.0, "tint": 0.0, "crf": 18, "preset": "medium"}
+    assert p == {"exposure": 0.0, "contrast": 1.0, "saturation": 1.0, "temperature": 6500.0, "tint": 0.0, "crf": 18, "preset": "medium", "audio_stream": 0}
 
 
 @pytest.mark.parametrize("name,bad", [("exposure", -3.01), ("exposure", 3.01), ("contrast", -0.01), ("contrast", 2.01),
@@ -309,6 +333,104 @@ def test_graph_lut_identity_uses_content_override_not_path():
     assert ids_path1["op:a"] == ids_path2["op:a"]     # same content hash, different path -> same identity
     ids_path3 = g2.identities("fp", {}, {"op:a": {"lut_path": "sha-of-different-content"}})
     assert ids_path3["op:a"] != ids_path2["op:a"]      # different content hash -> different identity
+
+
+# ---- executor._argv: --audio-stream threaded to every applicable ffmpeg-skill/color invocation, no ffmpeg needed
+def _argv_for(tmp_path, typ, params, lut=None):
+    from color_grading.executor import Executor, LutInfo, NodeState
+    from color_grading.graph import Node
+    ex = Executor(PathPolicy(str(tmp_path)), skill=None)
+    st = NodeState(Node("op:x", typ, ["source"], params), "identity16")
+    if lut is not None:
+        st.lut = LutInfo(lut, 4, "deadbeef")
+    return ex._argv(st, "/in.mp4", tmp_path / "out.mp4")
+
+
+@pytest.mark.parametrize("typ,params", [
+    ("HDR_TO_SDR", {"tonemap": "hable", "peak_nits": 1000.0, "desat": 0.0, "force": False, "crf": 18, "preset": "medium", "audio_stream": 2}),
+    ("RETAG", {"target": "bt709", "audio_stream": 2}),
+    ("PRIMARY_CORRECTION", {"exposure": 0.0, "contrast": 1.0, "saturation": 1.0, "temperature": 6500.0, "tint": 0.0, "crf": 18, "preset": "medium", "audio_stream": 2}),
+])
+def test_argv_includes_audio_stream_flag_with_its_value(tmp_path, typ, params):
+    argv = _argv_for(tmp_path, typ, params)
+    assert "--audio-stream" in argv
+    assert argv[argv.index("--audio-stream") + 1] == "2"
+
+
+def test_argv_lut_apply_includes_audio_stream_flag(tmp_path):
+    lut = tmp_path / "x.cube"
+    lut.write_text("x")
+    argv = _argv_for(tmp_path, "LUT_APPLY", {"lut_path": str(lut), "lut_strength": 1.0, "crf": 18, "preset": "medium", "audio_stream": 1}, lut=lut)
+    assert "--audio-stream" in argv and argv[argv.index("--audio-stream") + 1] == "1"
+
+
+def test_argv_strip_dovi_has_no_audio_stream_flag(tmp_path):
+    """STRIP_DOVI takes no audio_stream parameter (model.py) and _argv must not invent one: its stream copy keeps
+    every audio track untouched regardless."""
+    argv = _argv_for(tmp_path, "STRIP_DOVI", {})
+    assert "--audio-stream" not in argv
+
+
+# ---- executor._validate_artifact: independent subtitle/data-stream-survival re-probe (no ffmpeg needed, ffmpeg-skill/
+# probe is stubbed so the check under test -- comparing before/after counts -- is isolated from ffmpeg-skill itself)
+class _StubSkill:
+    def __init__(self, probe_result):
+        self._probe_result = probe_result
+
+    def probe(self, path, timeout=None):
+        return self._probe_result
+
+
+def _validate(tmp_path, probe_result, source_subs=1, source_data=0, dropped_non_av_streams=None, node_type="STRIP_DOVI", params=None):
+    from color_grading.executor import Executor, NodeState
+    from color_grading.graph import Node
+    out = tmp_path / "out.mp4"
+    out.write_bytes(b"x" * 100)
+    ex = Executor(PathPolicy(str(tmp_path)), _StubSkill(probe_result))
+    st = NodeState(Node("op:x", node_type, ["source"], params or {}), "identity16")
+    st.dropped_non_av_streams = dropped_non_av_streams
+    source = {"duration": 0.0, "width": 0, "height": 0, "subtitle_streams": source_subs, "data_streams": source_data}
+    return ex._validate_artifact(out, st, source)
+
+
+def _probe(subtitle_streams=0, data_streams=0, **video_extra):
+    video = {"width": 160, "height": 90, "pix_fmt": "yuv420p", "codec": "hevc", "color_space": None, "color_primaries": None,
+             "color_transfer": None, "color_range": None, "hdr": False, "dolby_vision": False}
+    video.update(video_extra)
+    return {"duration": 0.0, "video": video, "subtitle_streams": subtitle_streams, "data_streams": data_streams}
+
+
+def test_validate_artifact_flags_unreported_subtitle_loss(tmp_path):
+    with pytest.raises(ColorError) as e:
+        _validate(tmp_path, _probe(subtitle_streams=0), source_subs=1, dropped_non_av_streams=None)
+    assert e.value.code == "VALIDATION_ERROR" and e.value.details["reason"] == "stream_loss_unreported"
+
+
+def test_validate_artifact_flags_unreported_subtitle_loss_even_when_dropped_flag_is_explicitly_false(tmp_path):
+    with pytest.raises(ColorError) as e:
+        _validate(tmp_path, _probe(subtitle_streams=0), source_subs=1, dropped_non_av_streams=False)
+    assert e.value.code == "VALIDATION_ERROR" and e.value.details["reason"] == "stream_loss_unreported"
+
+
+def test_validate_artifact_allows_a_loss_ffmpeg_skill_itself_reported(tmp_path):
+    art = _validate(tmp_path, _probe(subtitle_streams=0), source_subs=1, dropped_non_av_streams=True)
+    assert art.sha256
+
+
+def test_validate_artifact_allows_survived_streams(tmp_path):
+    art = _validate(tmp_path, _probe(subtitle_streams=1), source_subs=1, dropped_non_av_streams=False)
+    assert art.sha256
+
+
+def test_validate_artifact_skips_the_check_when_source_had_no_subtitle_or_data_streams(tmp_path):
+    art = _validate(tmp_path, _probe(subtitle_streams=0, data_streams=0), source_subs=0, source_data=0, dropped_non_av_streams=None)
+    assert art.sha256
+
+
+def test_validate_artifact_flags_unreported_data_stream_loss(tmp_path):
+    with pytest.raises(ColorError) as e:
+        _validate(tmp_path, _probe(data_streams=0), source_subs=0, source_data=1, dropped_non_av_streams=None)
+    assert e.value.code == "VALIDATION_ERROR" and e.value.details["reason"] == "stream_loss_unreported"
 
 
 # ---- canonical JSON
