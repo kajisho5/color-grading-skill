@@ -206,7 +206,10 @@ def test_argv_builder_uses_only_fixed_flags_numbers_enums_and_resolved_paths(wor
     dovi_node = Node("op:d", "STRIP_DOVI", ["source"], {})
     dovi_st = NodeState(dovi_node)
     correction_node = Node("op:c", "PRIMARY_CORRECTION", ["source"],
-                           {"exposure": 0.5, "contrast": 1.1, "saturation": 0.9, "temperature": 5600.0, "tint": -0.2, "crf": 18, "preset": "medium", "audio_stream": 3})
+                           {"exposure": 0.5, "contrast": 1.1, "saturation": 0.9, "temperature": 5600.0, "tint": -0.2,
+                            "gamma": 1.2, "lift": 0.04, "gain": -0.03, "levels_in_black": 16, "levels_in_white": 235,
+                            "levels_out_black": 0, "levels_out_white": 255, "curves": "medium_contrast",
+                            "crf": 18, "preset": "medium", "audio_stream": 3})
     correction_st = NodeState(correction_node)
 
     src = str((workspace / "sdr.mp4").resolve())
@@ -231,4 +234,7 @@ def test_argv_builder_uses_only_fixed_flags_numbers_enums_and_resolved_paths(wor
     assert ex._argv(retag_st, src, out) == [src, "--retag", "bt601", "--audio-stream", "2", "-o", str(out)]
     assert ex._argv(dovi_st, src, out) == [src, "--strip-dovi", "-o", str(out)]
     assert ex._argv(correction_st, src, out) == [src, "--correct", "--exposure", "0.5000", "--contrast", "1.1000", "--saturation", "0.9000",
-                                                  "--temperature", "5600.0000", "--tint", "-0.2000", "--audio-stream", "3", "--crf", "18", "--preset", "medium", "-o", str(out)]
+                                                  "--temperature", "5600.0000", "--tint", "-0.2000", "--gamma", "1.2000", "--lift", "0.0400",
+                                                  "--gain", "-0.0300", "--levels-in-black", "16", "--levels-in-white", "235",
+                                                  "--levels-out-black", "0", "--levels-out-white", "255", "--curves", "medium_contrast",
+                                                  "--audio-stream", "3", "--crf", "18", "--preset", "medium", "-o", str(out)]

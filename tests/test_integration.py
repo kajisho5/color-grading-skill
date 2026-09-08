@@ -210,6 +210,119 @@ def test_primary_correction_invalid_parameter_type_rejected(workspace):
     assert d["ok"] is False and d["error"]["code"] == "INVALID_REQUEST" and code == EXIT_CODES["INVALID_REQUEST"]
 
 
+# ---- gamma/lift/gain/levels/curves (ffmpeg-skill >= 0.12.3 --correct flags, docs/decisions.md ADR-18): each is a
+# real, measurable transform through the real ffmpeg-skill checkout, verified via analyze_levels() measurements
+# (never a subjective "looks graded" judgement) the same way exposure/saturation already are, above.
+def test_primary_correction_gamma_shifts_measured_luma(workspace):
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", gamma=3.0)])
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    r = results(d)["op:c"]
+    assert r["measurements"]["output"]["y_avg"] != r["measurements"]["input"]["y_avg"]
+
+
+def test_primary_correction_lift_and_gain_shift_measured_luma(workspace):
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", lift=0.3, gain=-0.3)])
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    r = results(d)["op:c"]
+    assert r["measurements"]["output"]["y_avg"] != r["measurements"]["input"]["y_avg"]
+
+
+def test_primary_correction_levels_stretch_changes_measured_luma(workspace):
+    """A narrow input window (levels_in_black/levels_in_white) stretched back to the full output range is a real
+    contrast-stretch transform, distinct from the always-on eq/colorbalance chain."""
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", levels_in_black=80, levels_in_white=150)])
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    r = results(d)["op:c"]
+    assert r["measurements"]["output"]["y_avg"] != r["measurements"]["input"]["y_avg"]
+
+
+def test_primary_correction_curves_changes_output_color(workspace):
+    """curves=negative is ffmpeg's own built-in preset, not a subjective look this skill invented; applying it to
+    a solid-colour source measurably changes the sampled output colour (a deterministic transform, not "looks
+    graded")."""
+    src_color = sample_avg_color(workspace / "sdr.mp4")
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", curves="negative")])
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    out_color = sample_avg_color(workspace / "out" / "main.mp4")
+    assert sum(abs(int(a) - int(b)) for a, b in zip(src_color, out_color)) > 30, (src_color, out_color)
+
+
+def test_primary_correction_curves_measurements_are_observed_not_judged(workspace):
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", curves="increase_contrast")])
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    r = results(d)["op:c"]
+    for side in ("input", "output"):
+        m = r["measurements"][side]
+        assert isinstance(m["y_avg"], (int, float))
+
+
+def test_primary_correction_invalid_curves_choice_rejected_through_cli(workspace):
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", curves="bogus_preset")])
+    code, d = run(doc)
+    assert d["ok"] is False and d["error"]["code"] == "INVALID_REQUEST" and code == EXIT_CODES["INVALID_REQUEST"]
+    assert not (workspace / "out").exists()
+
+
+def test_primary_correction_levels_in_black_ge_in_white_rejected_through_cli(workspace):
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", levels_in_black=200, levels_in_white=100)])
+    code, d = run(doc)
+    assert d["ok"] is False and d["error"]["code"] == "INVALID_REQUEST" and code == EXIT_CODES["INVALID_REQUEST"]
+    assert not (workspace / "out").exists()
+
+
+def test_primary_correction_levels_out_black_ge_out_white_rejected_through_cli(workspace):
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", levels_out_black=200, levels_out_white=100)])
+    code, d = run(doc)
+    assert d["ok"] is False and d["error"]["code"] == "INVALID_REQUEST" and code == EXIT_CODES["INVALID_REQUEST"]
+    assert not (workspace / "out").exists()
+
+
+def test_primary_correction_gamma_out_of_range_rejected_through_cli(workspace):
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", gamma=10.5)])
+    code, d = run(doc)
+    assert d["ok"] is False and d["error"]["code"] == "INVALID_REQUEST" and code == EXIT_CODES["INVALID_REQUEST"]
+    assert not (workspace / "out").exists()
+
+
+def test_primary_correction_lift_out_of_range_rejected_through_cli(workspace):
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", lift=1.5)])
+    code, d = run(doc)
+    assert d["ok"] is False and d["error"]["code"] == "INVALID_REQUEST" and code == EXIT_CODES["INVALID_REQUEST"]
+    assert not (workspace / "out").exists()
+
+
+def test_primary_correction_gain_out_of_range_rejected_through_cli(workspace):
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", gain=-1.5)])
+    code, d = run(doc)
+    assert d["ok"] is False and d["error"]["code"] == "INVALID_REQUEST" and code == EXIT_CODES["INVALID_REQUEST"]
+    assert not (workspace / "out").exists()
+
+
+def test_primary_correction_levels_out_of_range_rejected_through_cli(workspace):
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", levels_in_black=300)])
+    code, d = run(doc)
+    assert d["ok"] is False and d["error"]["code"] == "INVALID_REQUEST" and code == EXIT_CODES["INVALID_REQUEST"]
+    assert not (workspace / "out").exists()
+
+
+def test_primary_correction_all_new_defaults_are_near_identity(workspace):
+    """All-default gamma/lift/gain/levels/curves (identity values, curves unset) adds no measurable colour shift
+    beyond the same re-encode rounding the existing all-default PRIMARY_CORRECTION test already tolerates."""
+    src_color = sample_avg_color(workspace / "sdr.mp4")
+    doc = request_doc([op("c", "PRIMARY_CORRECTION", "source", gamma=1.0, lift=0.0, gain=0.0,
+                          levels_in_black=0, levels_in_white=255, levels_out_black=0, levels_out_white=255)])
+    code, d = run(doc)
+    assert code == 0 and d["ok"], full_error(d)
+    out_color = sample_avg_color(workspace / "out" / "main.mp4")
+    for src_c, out_c in zip(src_color, out_color):
+        assert abs(int(src_c) - int(out_c)) <= 20, (src_color, out_color)
+
+
 
 # ---- reencoded / dropped_non_av_streams surfaced from ffmpeg-skill (>= 0.12.0/0.12.1), audio_stream (>= 0.12.0)
 def test_retag_surfaces_reencoded_and_dropped_flags_and_keeps_subtitles(workspace):

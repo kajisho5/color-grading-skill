@@ -30,11 +30,14 @@ from .errors import ColorError
 SUPPORTED_CONTRACT_VERSION = "1.0"
 # verified: scripts/color.py --to-sdr/--lut/--retag/--strip-dovi/--correct with
 # --crf/--preset/--tonemap/--peak/--desat/--lut-strength/--force/--exposure/--contrast/--saturation/--temperature/--tint,
-# and --audio-stream (ffmpeg-skill 0.12.0) on every invocation; the minimum is 0.12.1, not 0.12.0, because
-# --to-sdr/--lut/--correct only started honestly reporting dropped_non_av_streams (subtitle/data-stream survival)
-# in 0.12.1 -- executor._validate_artifact's stream-survival check relies on that field being present for all four
-# color-tool operation types, not just RETAG (which got reencoded/dropped_non_av_streams in 0.12.0).
-SUPPORTED_MIN = (0, 12, 1)
+# --gamma/--lift/--gain/--levels-in-black/--levels-in-white/--levels-out-black/--levels-out-white/--curves
+# (ffmpeg-skill 0.12.3), and --audio-stream (ffmpeg-skill 0.12.0) on every invocation; the minimum is 0.12.3, not
+# 0.12.1, because --correct's gamma/lift/gain/levels/curves flags (PRIMARY_CORRECTION's matching parameters,
+# docs/decisions.md ADR-18) do not exist in color.py before 0.12.3 -- this skill does not support ffmpeg-skill
+# versions per-operation, so the window covers every flag PRIMARY_CORRECTION now emits, not just the five original
+# ones (0.12.1 remains the floor for dropped_non_av_streams honesty on every re-encoding colour operation, which
+# 0.12.3 still satisfies).
+SUPPORTED_MIN = (0, 12, 3)
 SUPPORTED_MAX_EXCLUSIVE = (1, 0, 0)
 ENV_DIR_KEYS = ("COLOR_GRADING_FFMPEG_SKILL_DIR", "VIDEO_AGENT_FFMPEG_SKILL_DIR")
 TOOLS_USED = ("probe", "color")
@@ -42,7 +45,9 @@ TOOLS_USED = ("probe", "color")
 FLAGS_USED: Dict[str, Tuple[str, ...]] = {
     "probe": ("inputs",),
     "color": ("input", "output", "to_sdr", "lut", "retag", "strip_dovi", "correct", "tonemap", "peak", "desat", "lut_strength", "force",
-              "exposure", "contrast", "saturation", "temperature", "tint", "audio_stream", "crf", "preset", "json"),
+              "exposure", "contrast", "saturation", "temperature", "tint", "gamma", "lift", "gain",
+              "levels_in_black", "levels_in_white", "levels_out_black", "levels_out_white", "curves",
+              "audio_stream", "crf", "preset", "json"),
 }
 _ENV_KEEP = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "TERM",
              "SYSTEMROOT", "SYSTEMDRIVE", "PATHEXT", "COMSPEC", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA")

@@ -1,7 +1,7 @@
 # ffmpeg-skill relationship
 
 color-grading-skill is a client of ffmpeg-skill's **public contract** (`ffmpeg-skill contract --json`,
-`contract_version 1.0`, verified against ffmpeg-skill 0.12.1; earlier versions are not verified and are refused by
+`contract_version 1.0`, verified against ffmpeg-skill 0.12.3; earlier versions are not verified and are refused by
 the adapter's version window, the same posture audio-production-skill takes). It never calls `ffmpeg` or `ffprobe`
 itself.
 
@@ -10,23 +10,25 @@ itself.
 | ffmpeg-skill tool | used for | flags emitted |
 |---|---|---|
 | `ffmpeg-skill/probe` | source facts, every artifact's validation | positional `inputs` (one path) |
-| `ffmpeg-skill/color` | `HDR_TO_SDR` (`--to-sdr`), `LUT_APPLY` (`--lut`), `RETAG` (`--retag`), `STRIP_DOVI` (`--strip-dovi`), `PRIMARY_CORRECTION` (`--correct`) | `--to-sdr`, `--lut`, `--retag`, `--strip-dovi`, `--correct` (mutually exclusive, exactly one required — matches this skill's one-operation-per-node model exactly), `--tonemap`, `--peak`, `--desat`, `--force`, `--lut-strength`, `--exposure`, `--contrast`, `--saturation`, `--temperature`, `--tint`, `--audio-stream`, `--crf`, `--preset`, `-o`, `--json` |
+| `ffmpeg-skill/color` | `HDR_TO_SDR` (`--to-sdr`), `LUT_APPLY` (`--lut`), `RETAG` (`--retag`), `STRIP_DOVI` (`--strip-dovi`), `PRIMARY_CORRECTION` (`--correct`) | `--to-sdr`, `--lut`, `--retag`, `--strip-dovi`, `--correct` (mutually exclusive, exactly one required — matches this skill's one-operation-per-node model exactly), `--tonemap`, `--peak`, `--desat`, `--force`, `--lut-strength`, `--exposure`, `--contrast`, `--saturation`, `--temperature`, `--tint`, `--gamma`, `--lift`, `--gain`, `--levels-in-black`, `--levels-in-white`, `--levels-out-black`, `--levels-out-white`, `--curves`, `--audio-stream`, `--crf`, `--preset`, `-o`, `--json` |
 
 `doctor` checks that the located ffmpeg-skill declares `color` with `video_required: true` and that every flag
 listed above exists in the tool's generated `input_schema`; a mismatch is a `fail` and `run` refuses with
 `TOOL_ERROR` (`ffmpeg_skill_incompatible`).
 
-## Why 0.12.1
+## Why 0.12.3
 
 Every flag this skill emits was read directly from `scripts/color.py`'s argparse definition and confirmed present in
-`scripts/_contract.py --json --static`'s generated `input_schema` at ffmpeg-skill 0.12.1 (0.9.1 lacked `--correct`
-and its five parameter flags, so PRIMARY_CORRECTION raised the window to 0.9.2 first, docs/decisions.md ADR-15;
-`--audio-stream` does not exist in `color.py` before 0.12.0, and `--to-sdr`/`--lut`/`--correct` did not honestly
-report `dropped_non_av_streams` before 0.12.1 — RETAG's own `reencoded`/`dropped_non_av_streams` pair is 0.12.0,
-docs/decisions.md ADR-17). Earlier versions were not inspected and are not claimed to work; the adapter's version
-window is therefore `[0.12.1, 1.0.0)`, the same convention audio-production-skill uses for its own dependency.
+`scripts/_contract.py --json --static`'s generated `input_schema` at ffmpeg-skill 0.12.3 (0.9.1 lacked `--correct`
+and its five original parameter flags, so PRIMARY_CORRECTION raised the window to 0.9.2 first, docs/decisions.md
+ADR-15; `--audio-stream` does not exist in `color.py` before 0.12.0, and `--to-sdr`/`--lut`/`--correct` did not
+honestly report `dropped_non_av_streams` before 0.12.1 — RETAG's own `reencoded`/`dropped_non_av_streams` pair is
+0.12.0, docs/decisions.md ADR-17; `--gamma`/`--lift`/`--gain`/`--levels-*`/`--curves` do not exist in `color.py`
+before 0.12.3, docs/decisions.md ADR-18). Earlier versions were not inspected and are not claimed to work; the
+adapter's version window is therefore `[0.12.3, 1.0.0)`, the same convention audio-production-skill uses for its
+own dependency.
 
-## Observed behaviour this skill relies on (measured by reading ffmpeg-skill 0.12.1's `scripts/color.py`)
+## Observed behaviour this skill relies on (measured by reading ffmpeg-skill 0.12.3's `scripts/color.py`)
 
 - `color.py` requires a video stream (`die("input has no video stream")` when `probe` reports none) and refuses to
   run without exactly one of `--to-sdr` / `--lut` / `--retag` / `--strip-dovi` / `--correct` (an argparse
@@ -73,15 +75,24 @@ window is therefore `[0.12.1, 1.0.0)`, the same convention audio-production-skil
   (`-bsf:v filter_units=remove_types=62 -tag:v hvc1`), removing the Dolby Vision RPU NAL unit; it does not require
   the input to already carry detected Dolby Vision side data (it warns and proceeds), but this skill still verifies
   the *output* no longer reports `dolby_vision` after the call.
-- `--correct` builds a fixed four-filter chain from its five typed flags: `exposure=exposure=<value>` (the dedicated
-  `exposure` filter, distinct from `eq`'s brightness — confirmed via `ffmpeg -h filter=exposure` vs.
-  `-h filter=eq`), `colortemperature=temperature=<value>` (6500 = neutral), `colorbalance=rm=<tint/2>:gm=<-tint>:bm=<tint/2>`
-  (tint expressed as a green(-1)/magenta(+1) balance shift: magenta raises red and blue, cuts green), and
-  `eq=contrast=<value>:saturation=<value>`, always in that order, then re-encodes with libx264
-  (`--crf`/`--preset`). Each of the five flags is range-checked by `color.py`
-  itself before ffmpeg runs (`die()` on an out-of-range value, matching the same ranges this skill's
-  `PRIMARY_CORRECTION` parameters declare) — this skill's own range checks in `model.py` duplicate ffmpeg-skill's
-  guarantee at the request boundary (fail fast, before a subprocess starts) rather than relying on it exclusively.
+- `--correct` builds a fixed filter chain from four always-present stages plus two stages appended only when asked
+  for: `exposure=exposure=<value>` (the dedicated `exposure` filter, distinct from `eq`'s brightness — confirmed
+  via `ffmpeg -h filter=exposure` vs. `-h filter=eq`), `colortemperature=temperature=<value>` (6500 = neutral),
+  `colorbalance=rs=<lift>:gs=<lift>:bs=<lift>:rm=<tint/2>:gm=<-tint>:bm=<tint/2>:rh=<gain>:gh=<gain>:bh=<gain>`
+  (a single `colorbalance` call covering all three tonal ranges: `lift`/`gain` set the shadow/highlight channels
+  directly, `tint` is expressed as a green(-1)/magenta(+1) midtone balance shift — magenta raises red and blue, cuts
+  green), and `eq=contrast=<value>:saturation=<value>:gamma=<value>` (gamma folded into the same `eq` term
+  contrast/saturation already use, as `eq`'s own gamma option) — always in that order, and always present because
+  every one of those eight flags (`exposure`/`contrast`/`saturation`/`temperature`/`tint`/`gamma`/`lift`/`gain`) has
+  an identity default value, so emitting the flag is harmless even unchanged. `colorlevels=<r/g/b in/out min/max>`
+  (the four `--levels-*` 8-bit values divided by 255.0 into the filter's native 0..1 range) is appended only when
+  they differ from `(0, 255, 0, 255)`, and `curves=preset=<name>` only when `--curves` was given — omitting either
+  already gets the identity result without an extra filter term. The whole chain re-encodes with libx264
+  (`--crf`/`--preset`). Every one of the thirteen typed flags is range-checked by `color.py` itself before ffmpeg
+  runs (`die()` on an out-of-range value, or on `levels_in_black >= levels_in_white` / `levels_out_black >=
+  levels_out_white`, matching the same ranges and ordering this skill's `PRIMARY_CORRECTION` parameters declare and
+  validate) — this skill's own range and ordering checks in `model.py` duplicate ffmpeg-skill's guarantee at the
+  request boundary (fail fast, before a subprocess starts) rather than relying on it exclusively.
   `--correct` also reports a `measurements` field: `{"input": analyze_levels(source), "output":
   analyze_levels(output)}`, reusing ffmpeg-skill's existing signalstats-based `analyze_levels` (the same primitive
   `probe.py --analyze` uses for Log-footage detection) — real, technical numbers (`y_min`/`y_max`/`y_avg`/
@@ -135,9 +146,8 @@ window is therefore `[0.12.1, 1.0.0)`, the same convention audio-production-skil
 | wanted operation | missing in ffmpeg-skill's public contract | consequence |
 |---|---|---|
 | Exposure / contrast / saturation / white balance (temperature + tint) | — implemented since ffmpeg-skill 0.9.2's `--correct` | `PRIMARY_CORRECTION` (this doc, above); no longer in `UNSUPPORTED_OPERATIONS` |
+| Gamma / three-way lift / gain / levels / curves | — implemented since ffmpeg-skill 0.12.3's `--correct` flags | `PRIMARY_CORRECTION`'s `gamma`/`lift`/`gain`/`levels_*`/`curves` parameters (this doc, above; docs/decisions.md ADR-18); no longer in `UNSUPPORTED_OPERATIONS` |
 | White balance as its own single operation type | no single "white balance" flag; only the two separate `temperature`/`tint` parameters that together achieve it | declared (`WHITE_BALANCE`); use `PRIMARY_CORRECTION`'s `temperature`/`tint` instead |
-| Gamma / lift / gain (shadows-mids-highlights) | no typed lift-gamma-gain filter in any script | declared (`GAMMA`, `LIFT`, `GAIN`); not implemented |
-| Levels / curves | no typed `levels` / `curves` wrapper in any script | declared (`LEVELS`, `CURVES`); not implemented |
 | Container / format conversion alongside grading | `color.py` writes to whatever extension `-o` names, no explicit "convert to X"; that is `export.py`'s job | outputs must keep the source's container (ADR-8); use ffmpeg-skill/export separately |
 | Multiple LUTs / multiple colour ops in one ffmpeg process | `color.py`'s mode flags are mutually exclusive | each operation is its own `ffmpeg-skill/color` call and its own intermediate; a chain of N operations costs N re-encodes (documented in README's Current limitations) |
 | Filter/encoder capability detection on FFmpeg ≥ 8.0 | ffmpeg-skill 0.9's `_ff_list` matches the pre-8.0 three-flag format; FFmpeg 8 prints two flags, so every filter is reported "missing" | when the doctor reports ffmpeg but zero filters, `filter:*` capabilities are `unknown`, not `unsupported`; execution proceeds and output validation decides (docs/decisions.md ADR-10) |

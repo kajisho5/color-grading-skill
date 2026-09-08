@@ -41,7 +41,8 @@ TOOL_FOR: Dict[str, Tuple[str, List[str]]] = {
     "LUT_APPLY": ("color", ["filter:lut3d", "encoder:libx264"]),
     "RETAG": ("color", []),
     "STRIP_DOVI": ("color", ["bsf:filter_units"]),
-    "PRIMARY_CORRECTION": ("color", ["filter:exposure", "filter:eq", "filter:colorbalance", "filter:colortemperature", "encoder:libx264"]),
+    "PRIMARY_CORRECTION": ("color", ["filter:exposure", "filter:eq", "filter:colorbalance", "filter:colortemperature", "filter:colorlevels",
+                                     "filter:curves", "encoder:libx264"]),
 }
 
 
@@ -322,9 +323,15 @@ class Executor:
         if node.type == "STRIP_DOVI":
             return [src, "--strip-dovi", "-o", o]
         if node.type == "PRIMARY_CORRECTION":
-            return [src, "--correct", "--exposure", fmt_num(p["exposure"]), "--contrast", fmt_num(p["contrast"]),
+            args = [src, "--correct", "--exposure", fmt_num(p["exposure"]), "--contrast", fmt_num(p["contrast"]),
                     "--saturation", fmt_num(p["saturation"]), "--temperature", fmt_num(p["temperature"]), "--tint", fmt_num(p["tint"]),
-                    "--audio-stream", str(p["audio_stream"]), "--crf", str(p["crf"]), "--preset", p["preset"], "-o", o]
+                    "--gamma", fmt_num(p["gamma"]), "--lift", fmt_num(p["lift"]), "--gain", fmt_num(p["gain"]),
+                    "--levels-in-black", str(p["levels_in_black"]), "--levels-in-white", str(p["levels_in_white"]),
+                    "--levels-out-black", str(p["levels_out_black"]), "--levels-out-white", str(p["levels_out_white"])]
+            if p["curves"] is not None:
+                args += ["--curves", p["curves"]]
+            args += ["--audio-stream", str(p["audio_stream"]), "--crf", str(p["crf"]), "--preset", p["preset"], "-o", o]
+            return args
         raise ColorError("INTERNAL_ERROR", f"no argv builder for {node.type}")
 
     @staticmethod

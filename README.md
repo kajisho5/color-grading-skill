@@ -47,7 +47,7 @@ and reports what it observed.
 | | |
 |---|---|
 | **Does** | execute `HDR_TO_SDR`, `LUT_APPLY`, `RETAG`, `STRIP_DOVI`, `PRIMARY_CORRECTION` as a dependency graph; validate every artifact by re-probing it (measured colour tags, never assumed); reuse intermediates by content-addressed identity; record full provenance |
-| **Does not** | decide *which* colour treatment, LUT, tonemap curve or correction values to apply; look at a frame and judge it "cinematic"; perform gamma, lift, gain, levels or curves correction (see [Limitations](#current-limitations)); convert containers; run `ffmpeg` directly; accept a command, argv or filter string from the caller |
+| **Does not** | decide *which* colour treatment, LUT, tonemap curve or correction values to apply; look at a frame and judge it "cinematic"; offer a single "white balance" operation type (see [Limitations](#current-limitations)); convert containers; run `ffmpeg` directly; accept a command, argv or filter string from the caller |
 
 That split is the whole design: **[video-production-agent](https://github.com/kajisho5/video-production-agent)**
 decides *what* to do and builds the request; **color-grading-skill** decides *how* to execute it safely and
@@ -131,7 +131,7 @@ Nothing in this pipeline reasons about the image. Every box is a typed, mechanic
 | `LUT_APPLY` | Apply a 3D `.cube` LUT |
 | `RETAG` | Rewrite colour tags (BT.709 / BT.2020 PQ / BT.2020 HLG / BT.601) without a re-encode where possible |
 | `STRIP_DOVI` | Remove a Dolby Vision RPU (HEVC only) |
-| `PRIMARY_CORRECTION` | Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint) — each an explicit, independently optional, range-checked parameter |
+| `PRIMARY_CORRECTION` | Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint), gamma, three-way shadows/highlights (lift/gain), levels and a curves preset — each an explicit, independently optional, range-checked parameter |
 
 Each maps 1:1 onto one mode of `ffmpeg-skill/color`; every operation takes exactly one input and none of them
 change duration or frame geometry (verified against the source within a documented tolerance). Full parameter
@@ -268,11 +268,13 @@ Every code has a stable exit code (`errors.exit_codes` in the contract); `ok` mi
 
 Stated as boundary, not as bugs to be worked around with a private filter string:
 
-- **Gamma, lift, gain, levels and curves are not implemented**: `WHITE_BALANCE` (as its own operation type — use
-  `PRIMARY_CORRECTION`'s `temperature`/`tint` instead), `GAMMA`, `LIFT`, `GAIN`, `LEVELS`, `CURVES` are declared in
-  the contract's `unsupported_operations` and rejected with `UNSUPPORTED_OPERATION` — ffmpeg-skill's public contract
-  has no typed filter for any of them yet. This skill will not grow a private one; it will support these once
-  ffmpeg-skill (or a future typed capability) does. Details per operation: [docs/ffmpeg-skill.md](docs/ffmpeg-skill.md).
+- **No single "white balance" operation type**: `WHITE_BALANCE` is declared in the contract's
+  `unsupported_operations` and rejected with `UNSUPPORTED_OPERATION` — ffmpeg-skill's public contract has no single
+  typed "white balance" flag, only `PRIMARY_CORRECTION`'s separate `temperature`/`tint` parameters that together
+  achieve it. This skill will not grow a private one; it will support a dedicated operation type once ffmpeg-skill
+  (or a future typed capability) does. (Gamma, lift, gain, levels and curves *are* implemented, as eight more
+  optional `PRIMARY_CORRECTION` parameters, since ffmpeg-skill 0.12.3 added typed `--correct` flags for them.)
+  Details per operation: [docs/ffmpeg-skill.md](docs/ffmpeg-skill.md).
 - One source per request; no MIX/CONCAT analogue for colour.
 - No container/format conversion — output keeps the source's container.
 - A chain of N operations costs N re-encodes/stream-copies (ffmpeg-skill/color's mode flags are mutually exclusive).
@@ -288,11 +290,12 @@ export COLOR_GRADING_FFMPEG_SKILL_DIR=/path/to/ffmpeg-skill     # or clone it as
 python -m pytest -q
 ```
 
-185 tests, nothing skipped by default, nothing mocked in the integration layer: 102 unit (schema, graph, path
+255 tests, nothing skipped by default, nothing mocked in the integration layer: 152 unit (schema, graph, path
 policy, determinism), 49 security (injection, path/symlink escapes, argv audit), 5 contract (contract ⇔
-implementation, doctor), and 29 integration tests that run every operation against real video through a real
+implementation, doctor), and 49 integration tests that run every operation against real video through a real
 ffmpeg-skill checkout and real FFmpeg — including deterministic pixel-level checks for `LUT_APPLY` and
-`PRIMARY_CORRECTION`, `PRIMARY_CORRECTION`'s observed before/after `measurements`, and a reproduction of the
+`PRIMARY_CORRECTION` (including its `gamma`/`lift`/`gain`/`levels_*`/`curves` parameters), `PRIMARY_CORRECTION`'s
+observed before/after `measurements`, and a reproduction of the
 exit-0-but-unchanged retag case above. CI (`.github/workflows/tests.yml`) runs Linux (Python 3.9, 3.11), Windows and
 macOS, each against a real FFmpeg install and a pinned ffmpeg-skill checkout. File-by-file coverage and what
 real-media verification does and does not prove: [docs/testing.md](docs/testing.md).
@@ -313,7 +316,7 @@ real-media verification does and does not prove: [docs/testing.md](docs/testing.
 | | [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) | [media-analysis-skill](https://github.com/kajisho5/media-analysis-skill) | **color-grading-skill** | [video-production-agent](https://github.com/kajisho5/video-production-agent) |
 |---|---|---|---|---|
 | Role | media execution engine (hands) | measurement / observation (meters) | **colour grading execution** | reasoning / decision / orchestration (brain) |
-| Never | holds a project model | edits or writes media | decides which LUT/curve/correction values, performs gamma/lift/gain/levels/curves correction, converts containers, runs ffmpeg directly | runs ffmpeg |
+| Never | holds a project model | edits or writes media | decides which LUT/curve/correction values, computes any colour-correction filter itself (always delegates to ffmpeg-skill), converts containers, runs ffmpeg directly | runs ffmpeg |
 
 `audio-production-skill`, `video-editing-skill`, `transcription-skill`, `subtitle-skill` and QC are not touched by
 this skill — it has no audio, cut/trim, speech or final-QC role.
