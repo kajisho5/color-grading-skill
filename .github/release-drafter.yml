@@ -33,12 +33,11 @@ version-resolver:
     labels: ['patch', 'fix', 'chore', 'dependencies']
   default: patch
 
+# 'major'/'breaking' is deliberately not autolabeled from title/body text: a PR author writing
+# "breaking: ..." or "BREAKING CHANGE" in a description should not, by itself, ship a major version
+# bump. That label -- and therefore a major release -- is applied by hand only, when a human
+# explicitly decides this change is breaking.
 autolabeler:
-  - label: 'major'
-    title:
-      - '/^(major|breaking)(\(.*\))?!?[:\s]/i'
-    body:
-      - '/BREAKING[ -]CHANGE/i'
   - label: 'feature'
     branch:
       - '/^(feature|feat)\//i'
