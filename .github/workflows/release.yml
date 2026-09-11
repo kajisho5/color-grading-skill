@@ -54,6 +54,22 @@ jobs:
             exit 1
           fi
 
+          # pyproject.toml is the single source of truth this job reads, but src/color_grading/__init__.py
+          # carries its own copy (VERSION) that must always match it. A silent mismatch here previously
+          # caused a real release (v0.3.0) to ship understating the actual code state, because __init__.py
+          # had already been bumped to 0.4.0 by a merged PR that forgot to update pyproject.toml. Failing
+          # loudly here instead of picking one file over the other forces that kind of desync to be fixed
+          # by hand before any release is cut.
+          init_version="$(grep -m1 '^VERSION = ' src/color_grading/__init__.py | sed -E 's/^VERSION = "([^"]+)"$/\1/')"
+          if [ -z "$init_version" ]; then
+            echo "::error::could not read VERSION from src/color_grading/__init__.py"
+            exit 1
+          fi
+          if [ "$current" != "$init_version" ]; then
+            echo "::error::pyproject.toml version ($current) and src/color_grading/__init__.py VERSION ($init_version) disagree -- fix this by hand before a release can be determined"
+            exit 1
+          fi
+
           latest_tag="$(git tag --list 'v*' --sort=-v:refname | head -n1 || true)"
           latest_version="${latest_tag#v}"
 
