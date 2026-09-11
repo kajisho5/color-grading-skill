@@ -1,0 +1,65 @@
+# Shared config for two workflows:
+#   - .github/workflows/pr-labeler.yml   (autolabeler only, on pull_request_target)
+#   - .github/workflows/release.yml      (version-resolver only, dry-run via disable-releaser: true)
+#
+# Neither workflow uses release-drafter's own draft-release feature: this repo's release.yml
+# does its own version bump / CHANGELOG.md / tag / GitHub Release / publish, reading only the
+# `resolved-version` output. The name/tag/template/categories below are kept complete and
+# consistent anyway, in case release-drafter's own release body is ever wanted directly.
+
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+
+categories:
+  - title: '⚠️ Breaking Changes'
+    labels: ['major', 'breaking']
+  - title: '🚀 Features'
+    labels: ['feature', 'minor']
+  - title: '🐛 Bug Fixes'
+    labels: ['fix']
+  - title: '🧰 Maintenance'
+    labels: ['chore', 'dependencies']
+
+change-template: '- $TITLE (#$NUMBER)'
+exclude-labels:
+  - 'skip-changelog'
+
+version-resolver:
+  major:
+    labels: ['major', 'breaking']
+  minor:
+    labels: ['minor', 'feature']
+  patch:
+    labels: ['patch', 'fix', 'chore', 'dependencies']
+  default: patch
+
+autolabeler:
+  - label: 'major'
+    title:
+      - '/^(major|breaking)(\(.*\))?!?[:\s]/i'
+    body:
+      - '/BREAKING[ -]CHANGE/i'
+  - label: 'feature'
+    branch:
+      - '/^(feature|feat)\//i'
+    title:
+      - '/^(add|implement|wire|introduce|feat)\b/i'
+  - label: 'fix'
+    branch:
+      - '/^(fix|bugfix|hotfix)\//i'
+    title:
+      - '/^fix\b/i'
+  - label: 'chore'
+    branch:
+      - '/^(chore|docs|test|ci)\//i'
+    title:
+      - '/^(readme|docs?|chore|refactor|test|ci)(\(.*\))?[:\s]/i'
+    files:
+      - '*.md'
+      - 'docs/**'
+      - '.github/**'
+
+template: |
+  ## Changes
+
+  $CHANGES
