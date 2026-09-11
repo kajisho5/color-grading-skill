@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # this repo's own CI/CD workflow definitions (actions/checkout, release-drafter, etc.)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"
+
+  # the pip/setuptools-based Python package (pyproject.toml); no runtime dependencies today, but
+  # this also tracks build-system requirements and anything added later
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "chore"

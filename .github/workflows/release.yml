@@ -1,0 +1,207 @@
+name: release
+
+# Single workflow, single job, triggered only by push to main -- never by a tag push. A GITHUB_TOKEN-
+# authored push (the version-bump commit and the tag this job creates) does not itself trigger a new
+# workflow run (GitHub's own anti-recursion rule for the default token), so there is no second stage
+# to wire up and no risk of this job re-triggering itself.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: read   # release-drafter reads merged-PR labels to resolve the next version
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: "!contains(github.event.head_commit.message, '[skip release]')"
+    runs-on: ubuntu-latest
+    # `secrets` is not a readable context in a step's `if:` condition, only in `env:`/`with:` -- so
+    # whether a PyPI token exists is resolved once here and read back as `env.HAS_PYPI_TOKEN` below.
+    env:
+      HAS_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history: release-drafter needs it, and so does `git log <tag>..HEAD`
+
+      - name: Resolve next version (dry run, no release object created)
+        id: drafter
+        uses: release-drafter/release-drafter@v6
+        with:
+          config-name: release-drafter.yml
+          disable-releaser: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Every value the release-drafter step could have derived from untrusted text (a PR title, a
+      # branch name) reaches this and every later step only through `env:`, never spliced with `${{ }}`
+      # into a run: script body -- the classic GitHub Actions script-injection pattern this avoids.
+      - name: Determine version to release
+        id: version
+        env:
+          RESOLVED_VERSION: ${{ steps.drafter.outputs.resolved_version }}
+        run: |
+          set -euo pipefail
+
+          current="$(grep -m1 '^version = ' pyproject.toml | sed -E 's/^version = "([^"]+)"$/\1/')"
+          if [ -z "$current" ]; then
+            echo "::error::could not read version from pyproject.toml"
+            exit 1
+          fi
+
+          latest_tag="$(git tag --list 'v*' --sort=-v:refname | head -n1 || true)"
+          latest_version="${latest_tag#v}"
+
+          {
+            echo "current=$current"
+            echo "latest_tag=$latest_tag"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ -z "$latest_tag" ]; then
+            echo "No existing tag: bootstrapping the release at the committed version ($current)."
+            final="$current"
+            bumped=false
+          elif [ "$current" != "$latest_version" ]; then
+            echo "pyproject.toml version ($current) already differs from the latest tag ($latest_version): respecting the manual bump."
+            final="$current"
+            bumped=false
+          else
+            final="${RESOLVED_VERSION#v}"
+            bumped=true
+          fi
+
+          if [ -z "$final" ]; then
+            echo "No version could be resolved: nothing to release."
+            {
+              echo "final="
+              echo "bumped=$bumped"
+              echo "skip=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git rev-parse "v$final" >/dev/null 2>&1; then
+            echo "Tag v$final already exists: nothing to release."
+            skip=true
+          else
+            skip=false
+          fi
+
+          {
+            echo "final=$final"
+            echo "bumped=$bumped"
+            echo "skip=$skip"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Bump version files
+        if: steps.version.outputs.skip != 'true' && steps.version.outputs.bumped == 'true'
+        env:
+          FINAL_VERSION: ${{ steps.version.outputs.final }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re, pathlib
+
+          final = os.environ["FINAL_VERSION"]
+
+          pyproject = pathlib.Path("pyproject.toml")
+          text = pyproject.read_text()
+          new_text, n = re.subn(r'(?m)^version = "[^"]+"$', f'version = "{final}"', text, count=1)
+          if n != 1:
+              raise SystemExit('could not find version = "..." in pyproject.toml')
+          pyproject.write_text(new_text)
+
+          init_path = pathlib.Path("src/color_grading/__init__.py")
+          text = init_path.read_text()
+          new_text, n = re.subn(r'(?m)^VERSION = "[^"]+"$', f'VERSION = "{final}"', text, count=1)
+          if n != 1:
+              raise SystemExit('could not find VERSION = "..." in src/color_grading/__init__.py')
+          init_path.write_text(new_text)
+          PY
+
+      # All PR-title-derived / commit-subject-derived text below comes from `git log`'s own stdout,
+      # captured with ordinary shell redirection -- never through a `${{ }}` expression, so it can
+      # never be re-parsed as script syntax no matter what characters a merged PR's title contained.
+      - name: Generate changelog entry
+        if: steps.version.outputs.skip != 'true'
+        id: changelog
+        env:
+          FINAL_VERSION: ${{ steps.version.outputs.final }}
+          LATEST_TAG: ${{ steps.version.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+          range="${LATEST_TAG:+$LATEST_TAG..}HEAD"
+          notes_file="$(mktemp)"
+          {
+            echo "## v$FINAL_VERSION - $(date -u +%Y-%m-%d)"
+            echo
+            git log "$range" --no-merges --pretty=format:'- %s (%h)'
+            echo
+          } > "$notes_file"
+          echo "notes_file=$notes_file" >> "$GITHUB_OUTPUT"
+          if [ -f CHANGELOG.md ]; then
+            { cat "$notes_file"; echo; cat CHANGELOG.md; } > CHANGELOG.md.new
+            mv CHANGELOG.md.new CHANGELOG.md
+          else
+            { echo "# Changelog"; echo; cat "$notes_file"; } > CHANGELOG.md
+          fi
+
+      - name: Commit version bump and changelog
+        if: steps.version.outputs.skip != 'true'
+        env:
+          FINAL_VERSION: ${{ steps.version.outputs.final }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml src/color_grading/__init__.py CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "nothing to commit (files already at the target version)"
+          else
+            git commit -q -m "chore(release): v$FINAL_VERSION [skip release]"
+          fi
+          git tag "v$FINAL_VERSION"
+
+      - name: Push commit and tag
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          git push origin HEAD:main
+          git push origin --tags
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FINAL_VERSION: ${{ steps.version.outputs.final }}
+          NOTES_FILE: ${{ steps.changelog.outputs.notes_file }}
+        run: |
+          set -euo pipefail
+          gh release create "v$FINAL_VERSION" --title "v$FINAL_VERSION" --notes-file "$NOTES_FILE"
+
+      - name: Set up Python
+        if: steps.version.outputs.skip != 'true' && env.HAS_PYPI_TOKEN == 'true'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build distributions
+        if: steps.version.outputs.skip != 'true' && env.HAS_PYPI_TOKEN == 'true'
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade build
+          python -m build
+
+      # No PyPI token configured yet (this Skill is currently installed from a git checkout across the
+      # whole ecosystem, never from PyPI): the tag and the GitHub Release above still go through, and
+      # only this publish step is skipped, per its own guard below.
+      - name: Publish to PyPI
+        if: steps.version.outputs.skip != 'true' && env.HAS_PYPI_TOKEN == 'true'
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}
