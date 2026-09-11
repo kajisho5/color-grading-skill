@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "color-grading-skill"
-version = "0.3.0"
+version = "0.4.0"
 description = "Deterministic colour grading / colour correction execution Skill (HDR-to-SDR tone mapping, 3D LUT application, colour-tag retagging, Dolby Vision RPU removal, typed primary colour correction) on top of ffmpeg-skill. Not an AI agent."
 readme = "README.md"
 license = {text = "MIT"}
