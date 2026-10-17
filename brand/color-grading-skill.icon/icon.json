@@ -4,9 +4,8 @@
       "layers" : [
         {
           "glass" : true,
-          "image-name" : "red.svg",
-          "name" : "Red",
-          "blend-mode" : "screen"
+          "image-name" : "overlaps.svg",
+          "name" : "Overlaps"
         }
       ],
       "name" : "Front",
@@ -24,15 +23,8 @@
       "layers" : [
         {
           "glass" : true,
-          "image-name" : "green.svg",
-          "name" : "Green",
-          "blend-mode" : "screen"
-        },
-        {
-          "glass" : true,
-          "image-name" : "blue.svg",
-          "name" : "Blue",
-          "blend-mode" : "screen"
+          "image-name" : "wheels.svg",
+          "name" : "Wheels"
         }
       ],
       "name" : "Back",
