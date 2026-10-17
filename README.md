@@ -1,14 +1,26 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Color Grading Skill: deterministic colour execution for AI agents" width="760">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/app-icon-dark.png">
+    <img src="brand/app-icon.png" width="128" alt="color-grading-skill app icon">
+  </picture>
 </p>
 
-<h1 align="center">color-grading-skill</h1>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/logo/color-grading-skill-wordmark-white.svg">
+    <img src="brand/logo/color-grading-skill-wordmark-black.svg" height="48" alt="color-grading-skill">
+  </picture>
+</p>
 
-<p align="center"><strong>Deterministic colour grading execution for AI video agents.</strong></p>
+<p align="center"><b>Deterministic colour grading execution for AI video agents.</b><br>
+Executes colour operations an AI agent has already decided on as a typed, deterministic operation graph on top of <a href="https://github.com/kajisho5/ffmpeg-skill">ffmpeg-skill</a>.<br>
+Typed operations · Validated artifacts · Full provenance · No LLM, no prompt, no automatic LUT or "look" selection.</p>
 
 <p align="center">
-  Typed operations · Validated artifacts · Full provenance<br>
-  Part of the AI Video Production Ecosystem · built on <a href="https://github.com/kajisho5/ffmpeg-skill">ffmpeg-skill</a>
+  <a href="#quick-start"><b>Quick start</b></a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#supported-operations">Supported operations</a> ·
+  <a href="#docs">Docs</a>
 </p>
 
 <p align="center">
