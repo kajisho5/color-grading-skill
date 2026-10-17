@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import RESPONSE_SCHEMA_VERSION, SKILL_ID, VERSION
-from .adapter import FfmpegSkill, ToolRun, fmt_num
+from .adapter import FfmpegSkill, ToolRun, fmt_num, probe_hdr
 from .canonical import sha256_file, stable_hash
 from .errors import ColorError
 from .graph import Node, OperationGraph
@@ -261,7 +261,7 @@ class Executor:
                 "has_video": bool(video), "has_audio": bool(meta.get("audio")), "width": video.get("width"), "height": video.get("height"),
                 "pix_fmt": video.get("pix_fmt"), "codec": video.get("codec"), "color_space": video.get("color_space"),
                 "color_primaries": video.get("color_primaries"), "color_transfer": video.get("color_transfer"), "color_range": video.get("color_range"),
-                "hdr": bool(video.get("hdr")), "dolby_vision": bool(video.get("dolby_vision")),
+                "hdr": probe_hdr(video), "dolby_vision": bool(video.get("dolby_vision")),
                 "subtitle_streams": int(meta.get("subtitle_streams") or 0), "data_streams": int(meta.get("data_streams") or 0)}
 
     @staticmethod
@@ -302,6 +302,13 @@ class Executor:
         return work_dir / f"{st.identity[:16]}{ext}"
 
     # ---- execution
+    def _quality_flag(self) -> str:
+        """`--quality` on an ffmpeg-skill that offers it (1.10+; 2.0 removed `--crf` from color.py), else `--crf`: the
+        same CRF value either way. Read from the capabilities the adapter detected (runtime_context reads them before
+        any run); with nothing detected yet the long-standing `--crf` is assumed."""
+        info = getattr(self.skill, "_info", None)
+        return info.quality_flag if info is not None else "--crf"
+
     def _argv(self, st: NodeState, src: str, out_path: Path) -> List[str]:
         """One ffmpeg-skill/color invocation (argv without the script and --json). Every value is a fixed flag, a
         formatted number, an enum member already validated against the model schema, or a resolved absolute path;
@@ -311,12 +318,12 @@ class Executor:
             args = [src, "--to-sdr", "--tonemap", p["tonemap"], "--peak", fmt_num(p["peak_nits"]), "--desat", fmt_num(p["desat"])]
             if p["force"]:
                 args.append("--force")
-            args += ["--audio-stream", str(p["audio_stream"]), "--crf", str(p["crf"]), "--preset", p["preset"], "-o", o]
+            args += ["--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], "-o", o]
             return args
         if node.type == "LUT_APPLY":
             assert st.lut is not None
             args = [src, "--lut", self._lut_arg(st.lut.path), "--lut-strength", fmt_num(p["lut_strength"]),
-                    "--audio-stream", str(p["audio_stream"]), "--crf", str(p["crf"]), "--preset", p["preset"], "-o", o]
+                    "--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], "-o", o]
             return args
         if node.type == "RETAG":
             return [src, "--retag", p["target"], "--audio-stream", str(p["audio_stream"]), "-o", o]
@@ -330,7 +337,7 @@ class Executor:
                     "--levels-out-black", str(p["levels_out_black"]), "--levels-out-white", str(p["levels_out_white"])]
             if p["curves"] is not None:
                 args += ["--curves", p["curves"]]
-            args += ["--audio-stream", str(p["audio_stream"]), "--crf", str(p["crf"]), "--preset", p["preset"], "-o", o]
+            args += ["--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], "-o", o]
             return args
         raise ColorError("INTERNAL_ERROR", f"no argv builder for {node.type}")
 
@@ -452,7 +459,7 @@ class Executor:
         if source["width"] and width != source["width"] or source["height"] and height != source["height"]:
             raise ColorError("VALIDATION_ERROR", f"{what}: output resolution {width}x{height} differs from the source's {source['width']}x{source['height']}",
                              {"reason": "resolution_mismatch", "path": str(path)})
-        hdr, dolby_vision = bool(video.get("hdr")), bool(video.get("dolby_vision"))
+        hdr, dolby_vision = probe_hdr(video), bool(video.get("dolby_vision"))
         if st.node.type == "HDR_TO_SDR" and hdr:
             raise ColorError("VALIDATION_ERROR", f"{what}: output is still tagged HDR (transfer={video.get('color_transfer')}, primaries={video.get('color_primaries')}) after tone mapping",
                              {"reason": "still_hdr", "path": str(path)})
@@ -531,7 +538,7 @@ class Executor:
         size = path.stat().st_size
         return Artifact(path, duration, int(width or 0), int(height or 0), video.get("pix_fmt"), video.get("codec"),
                         video.get("color_space"), video.get("color_primaries"), video.get("color_transfer"), video.get("color_range"),
-                        bool(video.get("hdr")), bool(video.get("dolby_vision")), size, sha256_file(str(path)))
+                        probe_hdr(video), bool(video.get("dolby_vision")), size, sha256_file(str(path)))
 
     def _provenance_chain(self, st: NodeState) -> List[Dict[str, Any]]:
         """output -> operation -> ... -> source, as the executor observed it (status, hashes, tool)."""

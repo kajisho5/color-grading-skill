@@ -1,22 +1,43 @@
 # ffmpeg-skill relationship
 
 color-grading-skill is a client of ffmpeg-skill's **public contract** (`ffmpeg-skill contract --json`,
-`contract_version 1.0`, verified against ffmpeg-skill 0.12.3; earlier versions are not verified and are refused by
-the adapter's version window, the same posture audio-production-skill takes). It never calls `ffmpeg` or `ffprobe`
-itself.
+`contract_version 1.0`). It works with whichever ffmpeg-skill version is installed, as long as that version has the
+flags below: compatibility is detected from the checkout itself, never decided by a version window (docs/decisions.md
+ADR-19). CI runs against ffmpeg-skill main and against the oldest verified commit (0.12.3). It never calls `ffmpeg` or
+`ffprobe` itself.
 
 ## Tools and flags used
 
 | ffmpeg-skill tool | used for | flags emitted |
 |---|---|---|
 | `ffmpeg-skill/probe` | source facts, every artifact's validation | positional `inputs` (one path) |
-| `ffmpeg-skill/color` | `HDR_TO_SDR` (`--to-sdr`), `LUT_APPLY` (`--lut`), `RETAG` (`--retag`), `STRIP_DOVI` (`--strip-dovi`), `PRIMARY_CORRECTION` (`--correct`) | `--to-sdr`, `--lut`, `--retag`, `--strip-dovi`, `--correct` (mutually exclusive, exactly one required — matches this skill's one-operation-per-node model exactly), `--tonemap`, `--peak`, `--desat`, `--force`, `--lut-strength`, `--exposure`, `--contrast`, `--saturation`, `--temperature`, `--tint`, `--gamma`, `--lift`, `--gain`, `--levels-in-black`, `--levels-in-white`, `--levels-out-black`, `--levels-out-white`, `--curves`, `--audio-stream`, `--crf`, `--preset`, `-o`, `--json` |
+| `ffmpeg-skill/color` | `HDR_TO_SDR` (`--to-sdr`), `LUT_APPLY` (`--lut`), `RETAG` (`--retag`), `STRIP_DOVI` (`--strip-dovi`), `PRIMARY_CORRECTION` (`--correct`) | `--to-sdr`, `--lut`, `--retag`, `--strip-dovi`, `--correct` (mutually exclusive, exactly one required — matches this skill's one-operation-per-node model exactly), `--tonemap`, `--peak`, `--desat`, `--force`, `--lut-strength`, `--exposure`, `--contrast`, `--saturation`, `--temperature`, `--tint`, `--gamma`, `--lift`, `--gain`, `--levels-in-black`, `--levels-in-white`, `--levels-out-black`, `--levels-out-white`, `--curves`, `--audio-stream`, `--quality` or `--crf` (whichever the checkout has), `--preset`, `-o`, `--json` |
 
-`doctor` checks that the located ffmpeg-skill declares `color` with `video_required: true` and that every flag
-listed above exists in the tool's generated `input_schema`; a mismatch is a `fail` and `run` refuses with
-`TOOL_ERROR` (`ffmpeg_skill_incompatible`).
+`doctor` checks that every flag listed above exists in the tool's generated `input_schema` (and, when the contract
+declares it, that `color` has `video_required: true`); a missing flag is a `fail` naming the flag, and `run` refuses
+with `TOOL_ERROR` (`ffmpeg_skill_incompatible`). The version number is reported, never compared.
 
-## Why 0.12.3
+## Capability detection (no version window)
+
+`adapter.FfmpegSkill.info()` reads the flags from the first source that answers: `scripts/_contract.py --json
+--static`, `scripts/_contract.py --json`, `scripts/contract.py --json`, and finally each tool's own `--help`
+(`adapter.flags_from_help`). What it found is in `doctor --json`'s `checks.ffmpeg_skill.detected`:
+
+| difference between releases | detected by | what this skill does |
+|---|---|---|
+| `--crf` became `--quality` (added 1.10, `--crf` removed from `color.py` in 2.0; same CRF scale and default) | which of `quality` / `crf` the `color` input_schema has | emits `--quality` when present, else `--crf`, with the request's `crf` value (`encoder_quality_flag`) |
+| `scripts/_common.py` became a `scripts/_common/` package (2.0) | the files on disk | nothing: this skill only runs `probe.py`/`color.py`; reported as `common_layout` |
+| an existing output is refused unless `--overwrite` (1.10 opt-in, 2.0 default) | `overwrite` in the `color` input_schema | nothing: every intermediate path is deleted before its `color.py` call, so the tool never sees an existing output and no overwrite consent is given; reported as `overwrite_flag` |
+| probe's `hdr` narrowed to PQ/HLG/Dolby Vision; `bt2020_or_hdr` carries the 1.x meaning (2.0) | which key probe's `video` object has | `adapter.probe_hdr` reads `bt2020_or_hdr` when present, else `hdr`: BT.2020 primaries or a PQ/HLG transfer in every version |
+| no `_contract.py doctor` (a checkout without it) | the file on disk | ffmpeg/ffprobe/filter capabilities are `unknown`, not `unsupported`; the run and output validation decide |
+
+The guarantees the former window encoded are implied by the flags: `--gamma`/`--lift`/`--gain`/`--levels-*`/
+`--curves` first exist in 0.12.3, which is after both `--audio-stream` (0.12.0) and honest `dropped_non_av_streams`
+reporting from `--to-sdr`/`--lut`/`--correct` (0.12.1). So a checkout that passes the flag check also has those, and
+no version number needs comparing. The result JSON top-level keys this skill reads (`status`, `error`,
+`measurements`, `reencoded`, `dropped_non_av_streams`, `commands`) are unchanged across 0.12.3 – 2.x.
+
+## Why 0.12.3 is the oldest release that works
 
 Every flag this skill emits was read directly from `scripts/color.py`'s argparse definition and confirmed present in
 `scripts/_contract.py --json --static`'s generated `input_schema` at ffmpeg-skill 0.12.3 (0.9.1 lacked `--correct`
@@ -24,9 +45,9 @@ and its five original parameter flags, so PRIMARY_CORRECTION raised the window t
 ADR-15; `--audio-stream` does not exist in `color.py` before 0.12.0, and `--to-sdr`/`--lut`/`--correct` did not
 honestly report `dropped_non_av_streams` before 0.12.1 — RETAG's own `reencoded`/`dropped_non_av_streams` pair is
 0.12.0, docs/decisions.md ADR-17; `--gamma`/`--lift`/`--gain`/`--levels-*`/`--curves` do not exist in `color.py`
-before 0.12.3, docs/decisions.md ADR-18). Earlier versions were not inspected and are not claimed to work; the
-adapter's version window is therefore `[0.12.3, 1.0.0)`, the same convention audio-production-skill uses for its
-own dependency.
+before 0.12.3, docs/decisions.md ADR-18). An earlier checkout lacks those flags, so the flag check refuses it and
+names them; no version comparison is needed for that. There is no upper bound: ffmpeg-skill's 2.x compatibility
+promise covers argument names and JSON keys, and the one rename it made (`--crf` → `--quality`) is detected.
 
 ## Observed behaviour this skill relies on (measured by reading ffmpeg-skill 0.12.3's `scripts/color.py`)
 
@@ -100,10 +121,11 @@ own dependency.
   into `NodeState.measurements`, the manifest and provenance.
 - Failure document: `{"status": "failed", "error": {"kind": "input|ffmpeg|missing_tool", "message"}}` with a
   non-zero exit; parsed into `TOOL_ERROR` with `details.error_kind`.
-- `ffmpeg-skill/probe`'s `video.hdr` is `true` when `color_transfer` is `smpte2084` or `arib-std-b67`, or
-  `color_primaries` is `bt2020`, or Dolby Vision side data is present; `video.dolby_vision` is `null` or a dict with
+- `ffmpeg-skill/probe`'s `video.hdr` (before 2.0; `video.bt2020_or_hdr` from 2.0, where `hdr` means the transfer
+  only) is `true` when `color_transfer` is `smpte2084` or `arib-std-b67`, or `color_primaries` is `bt2020`, or
+  Dolby Vision side data is present; `video.dolby_vision` is `null` or a dict with
   `profile`/`level`/`bl_compatibility_id`. This skill's `HDR_TO_SDR` / `STRIP_DOVI` validation reads exactly these
-  two fields, never re-derives HDR-ness from raw tags itself.
+  fields (`adapter.probe_hdr`), never re-derives HDR-ness from raw tags itself.
 - **`--audio-stream N` (default 0, ffmpeg-skill >= 0.12.0)** selects which audio stream of a multi-track input to
   keep, 0-based in file order; `color.py` validates it against `probe()`'s own `audio_streams` count and `die()`s on
   an out-of-range value. It only affects paths that re-encode audio: `--to-sdr`/`--lut`/`--correct` always, and

@@ -3,20 +3,44 @@ on:
   push:
     branches: [main]
   pull_request:
+  # ffmpeg-skill releases independently and often: run against its current main every day, so a release that breaks
+  # this skill shows up even when nothing here changed (there is no version window to hide behind, ADR-19)
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch: {}
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
+    name: ${{ matrix.os }} / py${{ matrix.python }} / ffmpeg-skill ${{ matrix.ffmpeg_skill_label }}
     strategy:
       fail-fast: false
       matrix:
+        # every platform runs against ffmpeg-skill main (the newest release); one Linux job keeps the oldest commit
+        # this skill is verified against (ffmpeg-skill 0.12.3: --crf, a single _common.py, probe's 1.x `hdr`), so
+        # both ends of the detected-capability range stay covered
         include:
           - os: ubuntu-latest
             python: "3.9"
+            ffmpeg_skill_ref: main
+            ffmpeg_skill_label: main
           - os: ubuntu-latest
             python: "3.11"
+            ffmpeg_skill_ref: main
+            ffmpeg_skill_label: main
           - os: windows-latest
             python: "3.11"
+            ffmpeg_skill_ref: main
+            ffmpeg_skill_label: main
           - os: macos-latest
             python: "3.11"
+            ffmpeg_skill_ref: main
+            ffmpeg_skill_label: main
+          - os: ubuntu-latest
+            python: "3.11"
+            ffmpeg_skill_ref: c3a4a5f0ef6629018308a7eaeb5a1f592e5defc1
+            ffmpeg_skill_label: "0.12.3 (oldest supported)"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -32,10 +56,13 @@ jobs:
       - name: Install FFmpeg (Windows)
         if: runner.os == 'Windows'
         run: choco install ffmpeg -y --no-progress
-      - name: Fetch ffmpeg-skill (execution engine, public contract 1.0, pinned to the commit verified for 0.12.3)
+      - name: Fetch ffmpeg-skill (${{ matrix.ffmpeg_skill_label }})
+        env:
+          FFMPEG_SKILL_REF: ${{ matrix.ffmpeg_skill_ref }}
         run: |
           git clone https://github.com/kajisho5/ffmpeg-skill vendor/ffmpeg-skill
-          git -C vendor/ffmpeg-skill checkout c3a4a5f0ef6629018308a7eaeb5a1f592e5defc1
+          git -C vendor/ffmpeg-skill checkout "$FFMPEG_SKILL_REF"
+          echo "ffmpeg-skill $(git -C vendor/ffmpeg-skill rev-parse HEAD) $(grep -m1 '"version"' vendor/ffmpeg-skill/package.json)"
         shell: bash
       - run: ffprobe -version
         shell: bash
