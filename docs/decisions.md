@@ -51,9 +51,9 @@
   this skill emitted at the time
   (`--to-sdr/--lut/--retag/--strip-dovi/--tonemap/--peak/--desat/--lut-strength/--force/--crf/--preset`) were read
   from `scripts/color.py` and confirmed present in `scripts/_contract.py --json --static`'s generated `input_schema`
-  at commit-pinned 0.9.1. The underlying principle stands (`doctor` / `run` refuse anything outside the verified
-  window rather than assume an untested version behaves the same); only the window itself moved when
-  `PRIMARY_CORRECTION` was added (ADR-15).
+  at commit-pinned 0.9.1. The window moved with ADR-15/17/18, and ADR-19 replaced it with capability detection:
+  the principle that survives is "refuse what cannot be shown to work", now shown by the flags themselves rather
+  than by a version number.
 - **ADR-13 Declared but not implemented operations are a fixed, honest list.** `WHITE_BALANCE` (as its own single
   operation type — see ADR-15) is declared in `UNSUPPORTED_OPERATIONS` with the specific ffmpeg-skill gap that
   blocks it; it raises `UNSUPPORTED_OPERATION` at validation and never appears in `contract --json`'s
@@ -184,3 +184,29 @@
     `--gain`/`--levels-*`/`--curves` do not exist in `color.py` before 0.12.3. As with every prior window move,
     this is not per-operation: one located checkout is either compatible with everything `PRIMARY_CORRECTION` now
     emits, or `doctor`/`run` refuse it wholesale with `ffmpeg_skill_incompatible`.
+- **ADR-19 ffmpeg-skill compatibility is detected, not a version window.** Supersedes the `[min, 1.0.0)` windows of
+  ADR-12/15/17/18. The window refused every ffmpeg-skill release from 1.0.0 on (`ffmpeg-skill 2.10.3 is outside
+  the supported window [0.12.3, 1.0.0)`) although most of them worked, and CI pinned one old commit, so a release
+  that really broke this skill would not have been noticed either. The owner's requirement is that this skill
+  works with whichever ffmpeg-skill is installed.
+  - *What is checked.* `adapter.check_tools`: every flag in `REQUIRED_FLAGS` is present in the located checkout's
+    `probe`/`color` input_schema (read from `_contract.py --json --static`, else `_contract.py --json`, else
+    `contract.py --json`, else each tool's `--help`), plus one of each `FLAG_ALTERNATIVES` group. A missing flag
+    is a `fail` that names the flag. The version and `contract_version` are reported, never compared.
+  - *Why no lower bound remains.* Every minimum the window carried was raised for a flag (`--correct`'s five
+    flags at 0.9.2, `--audio-stream` at 0.12.0, gamma/lift/gain/levels/curves at 0.12.3); the flag check refuses
+    exactly those checkouts. The one guarantee that was not a flag, honest `dropped_non_av_streams` from
+    `--to-sdr`/`--lut`/`--correct` (0.12.1), predates 0.12.3, so the flag check implies it.
+  - *Renamed flag.* ffmpeg-skill 1.10 added `--quality` (same CRF scale and default) and 2.0 removed `--crf` from
+    `color.py`. The request keeps its `crf` parameter; `executor._argv` emits it under whichever flag the
+    checkout offers, `--quality` first (so a 1.10 – 1.x checkout prints no deprecation warning).
+  - *Changed JSON meaning.* 2.0 narrowed probe's `hdr` to PQ/HLG/Dolby Vision and put the 1.x meaning in
+    `bt2020_or_hdr`. `adapter.probe_hdr` reads `bt2020_or_hdr` when present, else `hdr`, so `HDR_TO_SDR`'s
+    "still HDR" check and every artifact's `hdr` field keep one meaning across versions.
+  - *`--overwrite`.* Not passed. Every intermediate path is deleted right before its `color.py` call, so the tool
+    never has an existing output to refuse, and giving blanket overwrite consent would only widen what a race
+    could clobber. Whether the checkout has the flag is reported (`detected.overwrite_flag`).
+  - *CI.* `tests.yml` runs every platform against ffmpeg-skill main (also on a daily schedule, so a new release is
+    exercised without a push here) and one Linux job against the oldest verified commit (0.12.3,
+    `c3a4a5f0ef6629018308a7eaeb5a1f592e5defc1`). `tests/test_compat.py` pins the detection against fake 0.12.3,
+    1.0.0, 2.10.3 and far-future checkouts, a contract-less one, and the real checkout.

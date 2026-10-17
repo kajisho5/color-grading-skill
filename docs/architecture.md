@@ -64,7 +64,8 @@ edited at the same path does not. `plan_id` hashes every node identity plus the 
    `<workspace>/.color-grading/<project_id>/<identity[:16]><source-extension>` with a manifest
    (`<identity[:16]>.json`); if both exist, the manifest matches the identity and input hash and the file's sha256
    matches, the node is `reused`. Each node is exactly one `ffmpeg-skill/color` call built from typed parameters
-   (`executor._argv`): `HDR_TO_SDR` → `--to-sdr --tonemap … --peak … --desat … [--force] --crf … --preset …`;
+   (`executor._argv`): `HDR_TO_SDR` → `--to-sdr --tonemap … --peak … --desat … [--force] --crf … --preset …`
+   (`--quality` in place of `--crf` wherever the located ffmpeg-skill offers it, ADR-19);
    `LUT_APPLY` → `--lut <resolved path> --lut-strength … --crf … --preset …`; `RETAG` → `--retag <target>`;
    `STRIP_DOVI` → `--strip-dovi`; `PRIMARY_CORRECTION` → `--correct --exposure … --contrast … --saturation …
    --temperature … --tint … --gamma … --lift … --gain … --levels-in-black … --levels-in-white …
@@ -92,8 +93,9 @@ edited at the same path does not. `plan_id` hashes every node identity plus the 
 ## ffmpeg-skill adapter (`adapter.py`)
 
 The only module that starts a process. `locate()` finds the checkout; `info()` reads its contract
-(`_contract.py --json --static`) and checks `contract_version == 1.0`, the version window, and that every flag this
-skill emits exists in `ffmpeg-skill/{probe,color}`'s generated `input_schema`; `run_tool()` runs
+(`_contract.py --json --static`, falling back to `contract.py` and to `--help`) and checks that every flag this
+skill emits exists in `ffmpeg-skill/{probe,color}`'s generated `input_schema`, picking `--quality` or `--crf`
+(no version window, ADR-19); `run_tool()` runs
 `[sys.executable, scripts/<tool>.py, *argv, --json]` in its own process group with a minimal environment and a
 timeout, and parses the `{"status": "completed"|"failed"}` document; `probe()` wraps the read-only tool.
 
@@ -115,11 +117,7 @@ process exit code is `0` iff `ok`, else `errors.EXIT_CODES[code]`.
   `0.4.0` added `gamma`/`lift`/`gain`/`levels_in_black`/`levels_in_white`/`levels_out_black`/`levels_out_white`/
   `curves` to `PRIMARY_CORRECTION`'s parameters (docs/decisions.md ADR-18): every existing `PRIMARY_CORRECTION`
   identity changes for the same reason.
-- ffmpeg-skill compatibility window: contract `1.0`, version `[0.12.3, 1.0.0)` (measured; see docs/ffmpeg-skill.md).
-  Raised from `[0.9.2, 1.0.0)` (set when `PRIMARY_CORRECTION` was added) to `[0.12.1, 1.0.0)` when `audio_stream`
-  and honest `dropped_non_av_streams` reporting were added (ADR-17): `--audio-stream` first exists in ffmpeg-skill
-  0.12.0, and `--to-sdr`/`--lut`/`--correct` only started honestly reporting `dropped_non_av_streams` in 0.12.1
-  (RETAG's own `reencoded`/`dropped_non_av_streams` reporting is 0.12.0), so 0.12.1 is the first version where the
-  stream-survival check this skill now runs (`executor._validate_artifact`) is meaningful for every operation type.
-  Raised again to `[0.12.3, 1.0.0)` when `PRIMARY_CORRECTION`'s eight new parameters were added (ADR-18):
-  `--correct`'s `--gamma`/`--lift`/`--gain`/`--levels-*`/`--curves` flags do not exist in `color.py` before 0.12.3.
+- ffmpeg-skill compatibility: detected, not a version window (ADR-19). A checkout is usable when every flag this
+  skill emits is present (`adapter.REQUIRED_FLAGS`, plus one of `--quality`/`--crf`); that is ffmpeg-skill 0.12.3
+  and every later release, 2.x included. Earlier ADRs (12, 15, 17, 18) recorded a moving `[min, 1.0.0)` window; each
+  minimum is now implied by the flags it was raised for, and the upper bound is gone.
