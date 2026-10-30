@@ -11,6 +11,9 @@ on:
 concurrency:
   group: tests-${{ github.ref }}
   cancel-in-progress: true
+permissions:
+  contents: read
+
 jobs:
   test:
     name: ${{ matrix.os }} / py${{ matrix.python }} / ffmpeg-skill ${{ matrix.ffmpeg_skill_label }}

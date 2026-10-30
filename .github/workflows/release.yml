@@ -31,7 +31,7 @@ jobs:
 
       - name: Resolve next version (dry run, no release object created)
         id: drafter
-        uses: release-drafter/release-drafter@v6
+        uses: release-drafter/release-drafter@6a93d829887aa2e0748befe2e808c66c0ec6e4c7 # v6.4.0
         with:
           config-name: release-drafter.yml
           disable-releaser: true
@@ -218,6 +218,6 @@ jobs:
       # only this publish step is skipped, per its own guard below.
       - name: Publish to PyPI
         if: steps.version.outputs.skip != 'true' && env.HAS_PYPI_TOKEN == 'true'
-        uses: pypa/gh-action-pypi-publish@release/v1
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
