@@ -19,10 +19,12 @@ original flags and ranges (docs/ffmpeg-skill.md) -- never a raw filter string. f
 typed `--correct` flags (gamma, three-way lift/gain, colorlevels, and the curves filter's built-in presets);
 PRIMARY_CORRECTION gained the matching eight parameters (gamma / lift / gain / levels_in_black / levels_in_white /
 levels_out_black / levels_out_white / curves) the same way, still never a raw filter string (docs/decisions.md
-ADR-18). White balance stays in UNSUPPORTED_OPERATIONS as its own operation type because no single "white balance"
-flag exists -- only PRIMARY_CORRECTION's temperature and tint parameters together achieve it; this package will
-never work around a genuine ffmpeg-skill gap by improvising a raw ffmpeg filter string of its own (that would cross
-the ffmpeg-skill boundary, see docs/architecture.md)."""
+ADR-18). WHITE_BALANCE is an alias (OPERATION_ALIASES), not an operation type of its own: it is accepted as a
+request `type`, restricted to PRIMARY_CORRECTION's temperature / tint (plus the encode and audio-stream parameters),
+and resolved to PRIMARY_CORRECTION at validation, so everything downstream (graph, identity, provenance) only ever
+sees PRIMARY_CORRECTION (docs/decisions.md ADR-20). This package will never work around a genuine ffmpeg-skill gap
+by improvising a raw ffmpeg filter string of its own (that would cross the ffmpeg-skill boundary, see
+docs/architecture.md)."""
 from __future__ import annotations
 
 import math
@@ -133,11 +135,21 @@ OPERATION_TYPES: Dict[str, Dict[str, Any]] = {
 # This skill never adds one by writing a raw ffmpeg filter itself. Exposure / contrast / saturation / temperature /
 # tint moved out of this table in favour of PRIMARY_CORRECTION once ffmpeg-skill 0.9.2 added typed --correct flags
 # for them (docs/decisions.md ADR-15); gamma / lift / gain / levels / curves moved out the same way once ffmpeg-skill
-# 0.12.3 added typed --correct flags for them too (ADR-18). WHITE_BALANCE stays declared because there is no single
-# "white balance" operation type or flag -- only the two separate PRIMARY_CORRECTION parameters that together
-# achieve it.
-UNSUPPORTED_OPERATIONS: Dict[str, str] = {
-    "WHITE_BALANCE": "no single white-balance operation or flag exists; use PRIMARY_CORRECTION's temperature and tint parameters",
+# 0.12.3 added typed --correct flags for them too (ADR-18). WHITE_BALANCE left this table for OPERATION_ALIASES
+# below (ADR-20): it was never blocked by an ffmpeg-skill gap, only by the absence of a single flag, and the two
+# typed flags that achieve it are already emitted by PRIMARY_CORRECTION. The table stays (empty) as the honest place
+# to declare a future operation that ffmpeg-skill really cannot execute (ADR-13).
+UNSUPPORTED_OPERATIONS: Dict[str, str] = {}
+
+# Request-level aliases (docs/decisions.md ADR-20): an alias is accepted as an operation `type`, takes only the
+# listed parameters of its target operation type, and is resolved to that target at validation -- it is not an
+# operation type of its own (never in OPERATION_TYPES, `operations[]` or the tool's `operations`), so the plan,
+# the deterministic identity, the results and the provenance all name the target. A WHITE_BALANCE node therefore has
+# exactly the identity of the equivalent PRIMARY_CORRECTION node and reuses its intermediate.
+OPERATION_ALIASES: Dict[str, Dict[str, Any]] = {
+    "WHITE_BALANCE": {"operation": "PRIMARY_CORRECTION", "parameters": ("temperature", "tint", *_ENCODE_PARAMS, *_AUDIO_STREAM_PARAM),
+                      "description": "white balance only: PRIMARY_CORRECTION's temperature (Kelvin) and tint, every other correction "
+                                     "parameter left at its identity default (ffmpeg-skill/color --correct --temperature --tint)"},
 }
 
 
@@ -222,6 +234,20 @@ def _number(value: Any, where: str, lo: Optional[float] = None, hi: Optional[flo
     if lo is not None and value < lo or hi is not None and value > hi:
         raise ColorError("INVALID_REQUEST", f"{where} must be within [{lo}, {hi}], got {value}", {"field": where, "min": lo, "max": hi})
     return float(value)
+
+
+def resolve_alias(alias: str, params: Any, where: str) -> str:
+    """An OPERATION_ALIASES entry -> its target operation type. Only the alias's own parameter
+    subset is accepted (anything else is INVALID_REQUEST naming the field, exactly like an unknown parameter of a real
+    operation type); the target's own validate_parameters then fills every other parameter with its identity default."""
+    spec = OPERATION_ALIASES[alias]
+    allowed = spec["parameters"]
+    if isinstance(params, dict):
+        for k in sorted(params):
+            if k not in allowed:
+                raise ColorError("INVALID_REQUEST", f"{where}.parameters.{k}: not accepted by {alias} (an alias of {spec['operation']} "
+                                 f"taking only {list(allowed)}); use {spec['operation']} for it", {"field": f"{where}.parameters.{k}", "allowed": list(allowed)})
+    return spec["operation"]
 
 
 def validate_parameters(op_type: str, params: Any, where: str) -> Dict[str, Any]:
@@ -324,6 +350,8 @@ def parse_request(doc: Any) -> ColorRequest:
         typ = od["type"]
         if not isinstance(typ, str):
             raise ColorError("INVALID_REQUEST", f"{w}.type must be a string")
+        if typ in OPERATION_ALIASES:
+            typ = resolve_alias(typ, od.get("parameters"), w)
         if typ in UNSUPPORTED_OPERATIONS:
             raise ColorError("UNSUPPORTED_OPERATION", f"{w}: operation type {typ!r} is declared but not implemented: {UNSUPPORTED_OPERATIONS[typ]}",
                              {"field": w, "type": typ, "supported": sorted(OPERATION_TYPES)})

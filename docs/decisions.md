@@ -36,8 +36,8 @@
   color-grading-skill, then ffmpeg-skill/export (or an export-production-skill, if the ecosystem gains one) on the
   result.
 - **ADR-9 Refuse rather than approximate.** A non-HDR source into `HDR_TO_SDR` without `force: true`, a non-`.cube`
-  LUT, an output container that does not match the source, a request for a still-unimplemented correction
-  (`WHITE_BALANCE` as its own type), a `PRIMARY_CORRECTION` parameter outside its declared safe range, or a
+  LUT, an output container that does not match the source, a request for an operation declared in
+  `UNSUPPORTED_OPERATIONS`, a parameter an alias does not take (`exposure` under `WHITE_BALANCE`, ADR-20), a `PRIMARY_CORRECTION` parameter outside its declared safe range, or a
   `PRIMARY_CORRECTION.levels_in_black`/`levels_out_black` not strictly less than its matching
   `levels_in_white`/`levels_out_white` (ADR-18) — each is an explicit `UNSUPPORTED_*` / `INVALID_*` error, never a
   best-effort guess or a silently clamped value.
@@ -62,7 +62,9 @@
   add a second execution backend); this skill will not grow a private filter string to work around the gap.
   (`EXPOSURE`, `CONTRAST`, `SATURATION`, `TEMPERATURE` and `TINT` were removed from this list when
   `PRIMARY_CORRECTION` absorbed them, ADR-15; `GAMMA`, `LIFT`, `GAIN`, `LEVELS` and `CURVES` were removed the same
-  way when `PRIMARY_CORRECTION` absorbed their matching parameters, ADR-18.)
+  way when `PRIMARY_CORRECTION` absorbed their matching parameters, ADR-18. **Superseded for `WHITE_BALANCE`
+  2026-10-30, ADR-20:** it was never blocked by a gap in ffmpeg-skill, so it left this list and became an alias; the
+  list is empty and stays as the place for an operation ffmpeg-skill really cannot execute.)
 - **ADR-14 A Windows-only ffmpeg-skill defect is worked around from this skill's own side, never by editing
   ffmpeg-skill.** Measured on Windows CI (docs/ffmpeg-skill.md): an absolute Windows LUT path's drive-letter colon,
   once escaped by ffmpeg-skill's own `escape_filter_path` for the `-vf lut3d=file=...` value, is rejected by at
@@ -210,3 +212,22 @@
     exercised without a push here) and one Linux job against the oldest verified commit (0.12.3,
     `c3a4a5f0ef6629018308a7eaeb5a1f592e5defc1`). `tests/test_compat.py` pins the detection against fake 0.12.3,
     1.0.0, 2.10.3 and far-future checkouts, a contract-less one, and the real checkout.
+- **ADR-20 `WHITE_BALANCE` is an alias of `PRIMARY_CORRECTION`'s temperature/tint, not an unsupported operation.**
+  ECOSYSTEM_ROADMAP.md step 2. `WHITE_BALANCE` sat in `unsupported_operations` with the status `not_implemented`,
+  while `PRIMARY_CORRECTION` already executed white balance through ffmpeg-skill's typed `--temperature`/`--tint`
+  (ADR-15). One capability was reported as missing and present at once.
+  - *Decision.* `WHITE_BALANCE` moves to a new table, `model.OPERATION_ALIASES`, and is listed in the contract's new
+    `operation_aliases` (`type`, `alias_of`, `parameters`). A request may use it as an operation `type`; validation
+    accepts only `temperature`, `tint`, `crf`, `preset` and `audio_stream` and resolves it to `PRIMARY_CORRECTION`,
+    every other correction parameter at its identity default. Any other parameter is `INVALID_REQUEST` naming it and
+    pointing to `PRIMARY_CORRECTION`, not silently ignored (ADR-9). `UNSUPPORTED_OPERATIONS` becomes empty.
+  - *Why an alias, not a sixth operation type.* A sixth type would run the same `color.py --correct` call under a
+    second name, need its own Capability id, and give the same correction two identities, so neither could reuse
+    the other's intermediate. Resolved at validation, a `WHITE_BALANCE` node and the equivalent `PRIMARY_CORRECTION`
+    node have one identity, and the plan, results and provenance name `PRIMARY_CORRECTION`. `operations[]`, the
+    tool's `operations`, `provides` and `request.shape` stay as they were, so a consumer pinned to them sees no change.
+  - *Why it was never a real gap.* ADR-13 kept it out until ffmpeg-skill had "a single typed white balance
+    capability". No such flag is needed: the two typed flags exist, and the alias emits exactly them. No raw filter
+    string is involved (ADR-9, docs/architecture.md).
+  - *Not automatic.* The alias takes explicit values. Estimating a neutral point from the image would be a decision
+    and stays out of this skill (`not_provided`).

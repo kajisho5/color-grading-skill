@@ -203,6 +203,25 @@ def test_primary_correction_measurements_are_observed_not_judged(workspace):
     assert correction_entry["measurements"] == r["measurements"]
 
 
+def test_white_balance_alias_runs_as_primary_correction(workspace):
+    """WHITE_BALANCE (ADR-20) executes exactly PRIMARY_CORRECTION's --temperature/--tint through the real
+    ffmpeg-skill, is reported as PRIMARY_CORRECTION, and shares that operation's intermediate identity."""
+    code, d = run(request_doc([op("wb", "WHITE_BALANCE", "source", temperature=3000.0)]))
+    assert code == 0 and d["ok"], full_error(d)
+    wb = results(d)["op:wb"]
+    assert wb["type"] == "PRIMARY_CORRECTION"
+    assert next(o for o in d["outputs"][0]["provenance"]["operations"])["type"] == "PRIMARY_CORRECTION"
+    code2, d2 = run(request_doc([op("wb", "PRIMARY_CORRECTION", "source", temperature=3000.0)]))
+    assert code2 == 0 and d2["ok"], full_error(d2)
+    assert results(d2)["op:wb"]["operation_id"] == wb["operation_id"]
+
+
+def test_white_balance_alias_rejects_other_correction_parameters_through_cli(workspace):
+    code, d = run(request_doc([op("wb", "WHITE_BALANCE", "source", temperature=5000.0, exposure=1.0)]))
+    assert d["ok"] is False and d["error"]["code"] == "INVALID_REQUEST" and code == EXIT_CODES["INVALID_REQUEST"]
+    assert not (workspace / "out").exists()
+
+
 def test_primary_correction_invalid_parameter_type_rejected(workspace):
     doc = request_doc([op("c", "PRIMARY_CORRECTION", "source")])
     doc["project"]["operations"][0]["parameters"]["exposure"] = "1.0"

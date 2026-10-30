@@ -59,7 +59,7 @@ and reports what it observed.
 | | |
 |---|---|
 | **Does** | execute `HDR_TO_SDR`, `LUT_APPLY`, `RETAG`, `STRIP_DOVI`, `PRIMARY_CORRECTION` as a dependency graph; validate every artifact by re-probing it (measured colour tags, never assumed); reuse intermediates by content-addressed identity; record full provenance |
-| **Does not** | decide *which* colour treatment, LUT, tonemap curve or correction values to apply; look at a frame and judge it "cinematic"; offer a single "white balance" operation type (see [Limitations](#current-limitations)); convert containers; run `ffmpeg` directly; accept a command, argv or filter string from the caller |
+| **Does not** | decide *which* colour treatment, LUT, tonemap curve or correction values to apply; look at a frame and judge it "cinematic"; pick white-balance values (`WHITE_BALANCE` is an alias of `PRIMARY_CORRECTION`'s explicit `temperature`/`tint`); convert containers; run `ffmpeg` directly; accept a command, argv or filter string from the caller |
 
 That split is the whole design: **[video-production-agent](https://github.com/kajisho5/video-production-agent)**
 decides *what* to do and builds the request; **color-grading-skill** decides *how* to execute it safely and
@@ -144,6 +144,7 @@ Nothing in this pipeline reasons about the image. Every box is a typed, mechanic
 | `RETAG` | Rewrite colour tags (BT.709 / BT.2020 PQ / BT.2020 HLG / BT.601) without a re-encode where possible |
 | `STRIP_DOVI` | Remove a Dolby Vision RPU (HEVC only) |
 | `PRIMARY_CORRECTION` | Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint), gamma, three-way shadows/highlights (lift/gain), levels and a curves preset — each an explicit, independently optional, range-checked parameter |
+| `WHITE_BALANCE` *(alias)* | `PRIMARY_CORRECTION` restricted to `temperature` + `tint` (plus `crf`/`preset`/`audio_stream`); resolved to `PRIMARY_CORRECTION` at validation, so plan, identity and provenance name `PRIMARY_CORRECTION` ([ADR-20](docs/decisions.md)) |
 
 Each maps 1:1 onto one mode of `ffmpeg-skill/color`; every operation takes exactly one input and none of them
 change duration or frame geometry (verified against the source within a documented tolerance). Full parameter
@@ -222,8 +223,12 @@ color-grading doctor --json     # color-grading/doctor@1: environment vs. contra
 ```
 
 The contract states stable identifiers (`skill_id`, `operations[].type`, `operations[].parameters`,
-`unsupported_operations`, `output_formats`, `errors.codes`), all derived from the tables the code runs on — there
-are no placeholder operations. `doctor` reports every capability (`ffmpeg-skill`, `ffmpeg`, `ffprobe`,
+`operation_aliases`, `unsupported_operations`, `output_formats`, `errors.codes`), all derived from the tables the code
+runs on — there are no placeholder operations. For the AI Video Production OS registry it also carries
+`contract_version` (`1`, this contract's schema version) and `dependencies`: `ffmpeg-skill` with
+`version_range: ">=1.0 <2.0"` over ffmpeg-skill's own `contract_version` (`range_of: "contract_version"`), plus the
+tools used (`probe`, `color`). That range is a registry declaration; whether a given checkout actually works is still
+decided flag by flag (ADR-19). `doctor` reports every capability (`ffmpeg-skill`, `ffmpeg`, `ffprobe`,
 `filter:<name>`, `encoder:<name>`, `bsf:<name>`) as `supported`, `unsupported` or `unknown` — an installed capability
 is never reported absent, and a failed detection is never silently read as a pass.
 
@@ -282,12 +287,14 @@ Every code has a stable exit code (`errors.exit_codes` in the contract); `ok` mi
 
 Stated as boundary, not as bugs to be worked around with a private filter string:
 
-- **No single "white balance" operation type**: `WHITE_BALANCE` is declared in the contract's
-  `unsupported_operations` and rejected with `UNSUPPORTED_OPERATION` — ffmpeg-skill's public contract has no single
-  typed "white balance" flag, only `PRIMARY_CORRECTION`'s separate `temperature`/`tint` parameters that together
-  achieve it. This skill will not grow a private one; it will support a dedicated operation type once ffmpeg-skill
-  (or a future typed capability) does. (Gamma, lift, gain, levels and curves *are* implemented, as eight more
-  optional `PRIMARY_CORRECTION` parameters, since ffmpeg-skill 0.12.3 added typed `--correct` flags for them.)
+- **White balance is an alias, not its own operation type**: `WHITE_BALANCE` is accepted in a request and resolved
+  to `PRIMARY_CORRECTION` with only `temperature`/`tint` set (any other correction parameter under it is
+  `INVALID_REQUEST`); it is listed in the contract's `operation_aliases`, not in `operations[]`, and results and
+  provenance report `PRIMARY_CORRECTION` (ADR-20). ffmpeg-skill has no single "white balance" flag, and this skill
+  does not need one: the two typed flags that achieve it already exist. There is no automatic white balance (no
+  grey-world/neutral-point estimation): the caller supplies the values. (Gamma, lift, gain, levels and curves are
+  implemented too, as eight more optional `PRIMARY_CORRECTION` parameters, since ffmpeg-skill 0.12.3 added typed
+  `--correct` flags for them.)
   Details per operation: [docs/ffmpeg-skill.md](docs/ffmpeg-skill.md).
 - One source per request; no MIX/CONCAT analogue for colour.
 - No container/format conversion — output keeps the source's container.

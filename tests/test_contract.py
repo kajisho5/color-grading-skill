@@ -6,7 +6,7 @@ from color_grading.contract import skill_contract
 from color_grading.doctor import capability_status, doctor_report
 from color_grading.errors import ERROR_CODES, EXIT_CODES
 from color_grading.executor import TOOL_FOR
-from color_grading.model import OPERATION_TYPES, OUTPUT_FORMATS, UNSUPPORTED_OPERATIONS
+from color_grading.model import OPERATION_ALIASES, OPERATION_TYPES, OUTPUT_FORMATS, UNSUPPORTED_OPERATIONS
 from conftest import one_json, run_cli
 
 
@@ -29,6 +29,24 @@ def test_contract_matches_implementation():
     # generic core: no production-house / camera-brand vocabulary
     for word in ("cinematic", "teal-and-orange", "arri", "red camera", "blackmagic"):
         assert word not in text.lower()
+
+
+def test_contract_os_registry_contract_version_and_dependencies():
+    c = skill_contract()
+    assert c["contract_version"] == 1
+    (dep,) = c["dependencies"]
+    assert dep["skill_id"] == "ffmpeg-skill" and dep["version_range"] == ">=1.0 <2.0" and dep["range_of"] == "contract_version"
+    assert dep["required"] is True and dep["tools"] == ["ffmpeg-skill/probe", "ffmpeg-skill/color"]
+    assert dep["version_range"].startswith(">=" + c["ffmpeg_skill"]["contract_version"])
+
+
+def test_contract_white_balance_is_an_explicit_alias_not_unsupported():
+    c = skill_contract()
+    assert c["unsupported_operations"] == []
+    (alias,) = c["operation_aliases"]
+    assert alias["type"] == "WHITE_BALANCE" and alias["alias_of"] == "PRIMARY_CORRECTION"
+    assert alias["parameters"] == list(OPERATION_ALIASES["WHITE_BALANCE"]["parameters"])
+    assert "WHITE_BALANCE" not in {o["type"] for o in c["operations"]} and "WHITE_BALANCE" not in c["tools"][0]["operations"]
 
 
 def test_contract_and_skill_cli_are_identical():
