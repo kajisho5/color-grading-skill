@@ -23,9 +23,9 @@ Agent wires 5 color_* skills through color-grading/run, but only exposure, contr
 
 ## Steps
 
-- [ ] **1. contract_version + dependencies in the contract** — dependency on ffmpeg-skill with a range
+- [x] **1. contract_version + dependencies in the contract** — dependency on ffmpeg-skill with a range
   - Done when: OS registry conformance shows the dependency
-- [ ] **2. WHITE_BALANCE decision** — remove from `unsupported` or alias to temperature/tint (ADR)
+- [x] **2. WHITE_BALANCE decision** — remove from `unsupported` or alias to temperature/tint (ADR)
   - Done when: no ambiguous entry
 - [ ] **3. (agent side) expose gamma/lift/gain/levels/curves** — tracked in video-production-agent
   - Done when: plan carries them to PRIMARY_CORRECTION

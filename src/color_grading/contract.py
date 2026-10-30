@@ -11,7 +11,7 @@ from .adapter import FLAG_ALTERNATIVES, FLAGS_USED, KNOWN_CONTRACT_VERSION, REQU
 from .errors import ERROR_CODES, ERROR_TABLE, EXIT_CODES
 from .executor import DURATION_TOLERANCE, TOOL_FOR, WORK_DIR_NAME
 from .model import (CUBE_EXTENSIONS, FORBIDDEN_KEYS, ID_RE, MAX_LUT_BYTES, MAX_OPERATIONS, OPERATION_TYPES, OUTPUT_FORMATS, REF_RE,
-                    REQUEST_SCHEMA_ID, RETAG_TAGS, RETAG_TARGETS, TONEMAPS, UNSUPPORTED_OPERATIONS, X264_PRESETS)
+                    OPERATION_ALIASES, REQUEST_SCHEMA_ID, RETAG_TAGS, RETAG_TARGETS, TONEMAPS, UNSUPPORTED_OPERATIONS, X264_PRESETS)
 
 CONTRACT_SCHEMA_ID = f"{SKILL_ID}/contract@{CONTRACT_SCHEMA_VERSION}"
 
@@ -34,6 +34,23 @@ CAPABILITY_IDS: Dict[str, str] = {
 def capability_provides() -> List[Dict[str, str]]:
     return [{"id": CAPABILITY_IDS[typ], "lifecycle": "EXPERIMENTAL", "tool_id": f"{SKILL_ID}/run", "operation": typ}
             for typ in sorted(OPERATION_TYPES)]
+
+
+# The AI Video Production OS registry's `dependencies`: ffmpeg-skill, as a range of its contract_version (the one
+# version this adapter reads; ADR-19: what is actually needed is checked flag by flag, not by package version).
+FFMPEG_SKILL_CONTRACT_RANGE = f">={KNOWN_CONTRACT_VERSION} <{int(KNOWN_CONTRACT_VERSION.split('.')[0]) + 1}.0"
+
+
+def dependencies() -> List[Dict[str, Any]]:
+    return [{"skill_id": "ffmpeg-skill", "version_range": FFMPEG_SKILL_CONTRACT_RANGE, "range_of": "contract_version", "required": True,
+             "tools": [f"ffmpeg-skill/{t}" for t in TOOLS_USED]}]
+
+
+def operation_aliases() -> List[Dict[str, Any]]:
+    """ADR-20: request-level aliases, each resolved to its target operation type at validation (never an operation of its own)."""
+    return [{"type": a, "alias_of": s["operation"], "parameters": list(s["parameters"]), "description": s["description"],
+             "resolved_at": "validation; plan, identity, results and provenance name the target operation type"}
+            for a, s in sorted(OPERATION_ALIASES.items())]
 
 
 def _param_schema(ps: Dict[str, Any]) -> Dict[str, Any]:
@@ -62,19 +79,21 @@ def skill_contract() -> Dict[str, Any]:
               "provenance": "OBSERVED", "mutates_input": False, "delegates_to": [f"ffmpeg-skill/{t}" for t in TOOLS_USED]}]
     return {
         "schema": CONTRACT_SCHEMA_ID, "skill_id": SKILL_ID, "id": SKILL_ID, "name": PACKAGE_NAME, "package": PACKAGE_NAME, "version": VERSION,
-        "kind": "execution", "role": "colour grading / colour correction execution (processing); not decision, not measurement, not automatic look/LUT selection",
+        "contract_version": CONTRACT_SCHEMA_VERSION, "kind": "execution", "role": "colour grading / colour correction execution (processing); not decision, not measurement, not automatic look/LUT selection",
         "description": "Deterministic colour grading execution: HDR-to-SDR tone mapping, 3D .cube LUT application, colour-tag retagging, Dolby Vision RPU "
                        "removal, and typed primary colour correction (exposure/contrast/saturation/white balance/gamma/lift/gain/levels/curves), executed as "
                        "a typed operation graph through ffmpeg-skill's public contract, with output validation and provenance. Not an AI agent: it never "
                        "decides which colour treatment, LUT or look to apply, nor which correction values to use.",
         "repository": "https://github.com/kajisho5/color-grading-skill",
         "not_provided": ["AI reasoning", "decisions", "production plans", "automatic colour grading", "automatic look selection", "automatic LUT selection",
-                         "image understanding", "scene/face detection", "shot matching", "a single white-balance operation type (use PRIMARY_CORRECTION's "
-                         "temperature and tint parameters)", "container/format conversion (ffmpeg-skill/export)", "arbitrary ffmpeg filters",
+                         "image understanding", "scene/face detection", "shot matching", "automatic white balance (WHITE_BALANCE takes explicit temperature "
+                         "and tint values)", "container/format conversion (ffmpeg-skill/export)", "arbitrary ffmpeg filters",
                          "shell execution", "network access"],
         "tools": tools,
         "provides": capability_provides(),
+        "dependencies": dependencies(),
         "operations": operation_specs(),
+        "operation_aliases": operation_aliases(),
         "unsupported_operations": [{"type": t, "status": "not_implemented", "reason": r} for t, r in UNSUPPORTED_OPERATIONS.items()],
         "output_formats": {f: {"extension": s["extension"], "note": "must match the source container; this skill does not convert containers"} for f, s in OUTPUT_FORMATS.items()},
         "lut": {"format": "cube", "extensions": list(CUBE_EXTENSIONS), "max_bytes": MAX_LUT_BYTES, "hashed": "sha256, recorded in provenance",

@@ -5,7 +5,7 @@ import pytest
 from color_grading.canonical import canonical_json, sha256_text, stable_hash
 from color_grading.errors import ERROR_CODES, EXIT_CODES, ColorError
 from color_grading.graph import OperationGraph
-from color_grading.model import (MAX_OPERATIONS, OPERATION_TYPES, OUTPUT_FORMATS, RETAG_TAGS, UNSUPPORTED_OPERATIONS,
+from color_grading.model import (MAX_OPERATIONS, OPERATION_ALIASES, OPERATION_TYPES, OUTPUT_FORMATS, RETAG_TAGS, UNSUPPORTED_OPERATIONS,
                                  ColorOperation, ColorOutput, ColorProject, ColorSource, parse_ref, parse_request, validate_parameters)
 from color_grading.security import PathPolicy, check_filename
 
@@ -63,14 +63,66 @@ def test_unknown_operation_type_rejected():
     assert e.value.code == "UNSUPPORTED_OPERATION"
 
 
-@pytest.mark.parametrize("typ", list(UNSUPPORTED_OPERATIONS))
-def test_declared_unsupported_operations_rejected_with_reason(typ):
-    doc = base_doc([{"op_id": "a", "type": typ, "input": "source", "parameters": {}}])
+def test_declared_unsupported_operations_rejected_with_reason(monkeypatch):
+    # the table is empty today (WHITE_BALANCE became an alias, ADR-20); the mechanism (ADR-13) still has to work
+    monkeypatch.setitem(UNSUPPORTED_OPERATIONS, "NOT_YET", "no typed ffmpeg-skill flag for it")
+    doc = base_doc([{"op_id": "a", "type": "NOT_YET", "input": "source", "parameters": {}}])
     with pytest.raises(ColorError) as e:
         parse_request(doc)
     assert e.value.code == "UNSUPPORTED_OPERATION"
-    assert UNSUPPORTED_OPERATIONS[typ] in e.value.message
-    assert typ not in OPERATION_TYPES
+    assert "no typed ffmpeg-skill flag for it" in e.value.message
+
+
+def test_no_operation_is_both_declared_unsupported_and_supported_or_aliased():
+    assert not (set(UNSUPPORTED_OPERATIONS) & (set(OPERATION_TYPES) | set(OPERATION_ALIASES)))
+    assert not (set(OPERATION_ALIASES) & set(OPERATION_TYPES))
+    for alias, spec in OPERATION_ALIASES.items():
+        assert spec["operation"] in OPERATION_TYPES
+        assert set(spec["parameters"]) <= set(OPERATION_TYPES[spec["operation"]]["parameters"]), alias
+
+
+# ---- WHITE_BALANCE: an alias of PRIMARY_CORRECTION's temperature/tint, resolved at validation (docs/decisions.md ADR-20)
+def test_white_balance_is_an_alias_not_unsupported():
+    assert "WHITE_BALANCE" not in UNSUPPORTED_OPERATIONS and "WHITE_BALANCE" not in OPERATION_TYPES
+    assert OPERATION_ALIASES["WHITE_BALANCE"]["operation"] == "PRIMARY_CORRECTION"
+
+
+def test_white_balance_resolves_to_primary_correction_with_identity_defaults():
+    doc = base_doc([{"op_id": "wb", "type": "WHITE_BALANCE", "input": "source", "parameters": {"temperature": 5200, "tint": 0.1}}])
+    op = parse_request(doc).project.operations[0]
+    assert op.type == "PRIMARY_CORRECTION" and op.op_id == "wb"
+    assert op.parameters == validate_parameters("PRIMARY_CORRECTION", {"temperature": 5200, "tint": 0.1}, "x")
+    assert op.parameters["exposure"] == 0.0 and op.parameters["gamma"] == 1.0 and op.parameters["curves"] is None
+
+
+def test_white_balance_without_parameters_is_the_all_default_correction():
+    doc = base_doc([{"op_id": "wb", "type": "WHITE_BALANCE", "input": "source"}])
+    op = parse_request(doc).project.operations[0]
+    assert op.type == "PRIMARY_CORRECTION" and op.parameters == validate_parameters("PRIMARY_CORRECTION", {}, "x")
+
+
+@pytest.mark.parametrize("name", ["exposure", "contrast", "saturation", "gamma", "lift", "gain", "levels_in_black", "curves"])
+def test_white_balance_rejects_other_correction_parameters(name):
+    doc = base_doc([{"op_id": "wb", "type": "WHITE_BALANCE", "input": "source", "parameters": {"temperature": 5200, name: 1}}])
+    with pytest.raises(ColorError) as e:
+        parse_request(doc)
+    assert e.value.code == "INVALID_REQUEST" and "PRIMARY_CORRECTION" in e.value.message
+    assert e.value.details["field"] == f"project.operations[0].parameters.{name}"
+
+
+@pytest.mark.parametrize("params", [{"temperature": 1000}, {"temperature": 20000}, {"tint": 1.5}, {"crf": 99}])
+def test_white_balance_keeps_primary_correction_ranges(params):
+    doc = base_doc([{"op_id": "wb", "type": "WHITE_BALANCE", "input": "source", "parameters": params}])
+    with pytest.raises(ColorError) as e:
+        parse_request(doc)
+    assert e.value.code == "INVALID_REQUEST"
+
+
+def test_white_balance_forbidden_key_still_rejected():
+    doc = base_doc([{"op_id": "wb", "type": "WHITE_BALANCE", "input": "source", "parameters": {"filter": "eq"}}])
+    with pytest.raises(ColorError) as e:
+        parse_request(doc)
+    assert e.value.code == "INVALID_REQUEST"
 
 
 def test_duplicate_op_id_rejected():
@@ -396,6 +448,14 @@ def test_graph_identities_depend_on_primary_correction_parameters():
     ops3 = [ColorOperation("a", "PRIMARY_CORRECTION", "source", dict(params))]
     ids3 = OperationGraph(_project(ops3)).identities("deadbeef", {"ffmpeg-skill": "0.9.2"})
     assert ids1["op:a"] == ids3["op:a"]
+
+
+def test_white_balance_has_the_identity_of_the_equivalent_primary_correction():
+    def ids(typ, params):
+        doc = base_doc([{"op_id": "a", "type": typ, "input": "source", "parameters": params}])
+        return OperationGraph(parse_request(doc).project).identities("deadbeef", {"ffmpeg-skill": "2.21.0"})["op:a"]
+    assert ids("WHITE_BALANCE", {"temperature": 5200, "tint": -0.2}) == ids("PRIMARY_CORRECTION", {"temperature": 5200, "tint": -0.2})
+    assert ids("WHITE_BALANCE", {"temperature": 5200}) != ids("WHITE_BALANCE", {"temperature": 5300})
 
 
 def test_graph_identities_depend_on_gamma_lift_gain_levels_curves():
