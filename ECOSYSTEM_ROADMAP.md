@@ -30,7 +30,7 @@ Agent wires 5 color_* skills through color-grading/run, but only exposure, contr
 - [x] **3. (agent side) expose gamma/lift/gain/levels/curves** — tracked in video-production-agent ([video-production-agent#80](https://github.com/kajisho5/video-production-agent/pull/80), [#91](https://github.com/kajisho5/video-production-agent/pull/91))
   - Done when: plan carries them to PRIMARY_CORRECTION
   - Done (video-production-agent ADR-062 / ADR-076): `color.gamma` / `.lift` / `.gain` / `.levels_in_*` / `.levels_out_*` / `.curves` reach the PRIMARY_CORRECTION request by contract name; every `color.*` key, type, range and enum is read from the agent's pinned copy of this contract (0.4.0) and checked at plan time
-- [x] **4. ffmpeg-skill 3.0.0** — [#PRNUM](https://github.com/kajisho5/color-grading-skill/pull/PRNUM) — accept its contract_version 2.0; Python 3.9 CI against the last 2.x (ADR-21)
+- [x] **4. ffmpeg-skill 3.0.0** — [#26](https://github.com/kajisho5/color-grading-skill/pull/26) — accept its contract_version 2.0; Python 3.9 CI against the last 2.x (ADR-21)
   - Done when: CI passes against 3.0.0 and the range includes it
 
 ---
