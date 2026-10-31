@@ -231,3 +231,19 @@
     string is involved (ADR-9, docs/architecture.md).
   - *Not automatic.* The alias takes explicit values. Estimating a neutral point from the image would be a decision
     and stays out of this skill (`not_provided`).
+- **ADR-21 ffmpeg-skill 3.0.0: accept its `contract_version` 2.0; Python 3.9 is tested against the last 2.x.**
+  ffmpeg-skill 3.0.0 (`1dc2f52`) declares `contract_version` 2.0 (1.x and 2.x declared 1.0), drops Python 3.9 and
+  FFmpeg 5.x, and changes `cut.py`'s defaults. The registry range `>=1.0 <2.0` excluded it.
+  - *What this skill uses did not change.* It calls only `probe.py` and `color.py`. The 2.0 bump is for `cut.py`'s
+    `precision` / `keyframe_snapped` meaning (ffmpeg-skill `docs/contract.md` "What 3.0 changed"); no flag of
+    `REQUIRED_FLAGS` / `FLAG_ALTERNATIVES` was removed, and probe only gained `timecode`. The full suite (306 tests,
+    real media included) passes against 3.0.0 on Python 3.11 with ffmpeg 6.1.1.
+  - *Decision.* `adapter.KNOWN_CONTRACT_VERSIONS = ("1.0", "2.0")`; the dependency range becomes `>=1.0 <3.0`, and
+    the contract's `ffmpeg_skill` block lists `contract_versions_known`. `ffmpeg_skill.contract_version` stays the
+    oldest (1.0), which the range starts from. Still reported, never gated on (ADR-19).
+  - *Python 3.9 stays supported here* (`requires-python >=3.9`): this skill's own code needs nothing newer. ffmpeg-skill
+    3.x no longer supports it (its doctor reports `ok: false`), so the CI job on Python 3.9 now runs against the
+    last 2.x, 2.24.1 (`a2c8433`), pinned by commit. A new job runs 3.0.0 (`1dc2f52`, pinned) on Python 3.11. The
+    main jobs (Linux, Windows, macOS) already ran Python 3.11 with FFmpeg ≥ 6.1.
+  - *Re-pin.* `dependencies[].version_range` changes, so a consumer holding a copy of this contract
+    (video-production-agent) sees the new range when it re-pins.

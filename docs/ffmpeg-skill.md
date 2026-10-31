@@ -1,9 +1,9 @@
 # ffmpeg-skill relationship
 
 color-grading-skill is a client of ffmpeg-skill's **public contract** (`ffmpeg-skill contract --json`,
-`contract_version 1.0`). It works with whichever ffmpeg-skill version is installed, as long as that version has the
+`contract_version` 1.0 in 1.x/2.x, 2.0 in 3.x). It works with whichever ffmpeg-skill version is installed, as long as that version has the
 flags below: compatibility is detected from the checkout itself, never decided by a version window (docs/decisions.md
-ADR-19). CI runs against ffmpeg-skill main and against the oldest verified commit (0.12.3). It never calls `ffmpeg` or
+ADR-19, ADR-21). CI runs against ffmpeg-skill main, 3.0.0, 2.24.1 (the Python 3.9 job) and the oldest verified commit (0.12.3). It never calls `ffmpeg` or
 `ffprobe` itself.
 
 ## Tools and flags used

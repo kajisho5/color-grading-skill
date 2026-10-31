@@ -226,7 +226,7 @@ The contract states stable identifiers (`skill_id`, `operations[].type`, `operat
 `operation_aliases`, `unsupported_operations`, `output_formats`, `errors.codes`), all derived from the tables the code
 runs on — there are no placeholder operations. For the AI Video Production OS registry it also carries
 `contract_version` (`1`, this contract's schema version) and `dependencies`: `ffmpeg-skill` with
-`version_range: ">=1.0 <2.0"` over ffmpeg-skill's own `contract_version` (`range_of: "contract_version"`), plus the
+`version_range: ">=1.0 <3.0"` over ffmpeg-skill's own `contract_version` (`range_of: "contract_version"`), plus the
 tools used (`probe`, `color`). That range is a registry declaration; whether a given checkout actually works is still
 decided flag by flag (ADR-19). `doctor` reports every capability (`ffmpeg-skill`, `ffmpeg`, `ffprobe`,
 `filter:<name>`, `encoder:<name>`, `bsf:<name>`) as `supported`, `unsupported` or `unknown` — an installed capability
@@ -258,7 +258,7 @@ for its full flag list.
 
 This skill never calls `ffmpeg` or `ffprobe` itself. Every process it starts is
 `python3 <ffmpeg-skill>/scripts/{probe,color}.py` with a typed argv, verified against ffmpeg-skill's own
-machine-readable contract (`contract_version 1.0`) before use. Compatibility is detected, not looked up by version
+machine-readable contract (`contract_version` 1.0 in ffmpeg-skill 1.x/2.x, 2.0 in 3.x) before use. Compatibility is detected, not looked up by version
 number: every flag this skill emits must be present in the located checkout's contract (or `--help`), the CRF flag is
 whichever of `--quality` (ffmpeg-skill ≥ 1.10) / `--crf` (before 2.0) it offers, and probe's HDR flag is read as
 `bt2020_or_hdr` where it exists (2.0 narrowed `hdr`). A checkout missing a flag is refused with that flag named.
