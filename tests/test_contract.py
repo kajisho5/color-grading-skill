@@ -35,9 +35,11 @@ def test_contract_os_registry_contract_version_and_dependencies():
     c = skill_contract()
     assert c["contract_version"] == 1
     (dep,) = c["dependencies"]
-    assert dep["skill_id"] == "ffmpeg-skill" and dep["version_range"] == ">=1.0 <2.0" and dep["range_of"] == "contract_version"
+    assert dep["skill_id"] == "ffmpeg-skill" and dep["version_range"] == ">=1.0 <3.0" and dep["range_of"] == "contract_version"
     assert dep["required"] is True and dep["tools"] == ["ffmpeg-skill/probe", "ffmpeg-skill/color"]
     assert dep["version_range"].startswith(">=" + c["ffmpeg_skill"]["contract_version"])
+    # ffmpeg-skill 1.x/2.x declare contract_version 1.0, 3.x declares 2.0 (ADR-21): both inside the range
+    assert c["ffmpeg_skill"]["contract_versions_known"] == ["1.0", "2.0"]
 
 
 def test_contract_white_balance_is_an_explicit_alias_not_unsupported():

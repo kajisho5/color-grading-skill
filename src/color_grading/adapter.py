@@ -29,9 +29,11 @@ import time
 
 from .errors import ColorError
 
-# contract_version every ffmpeg-skill release so far declares (1.x and 2.x alike); reported, not gated on -- a
+# contract_version values ffmpeg-skill releases declare: 1.0 (1.x and 2.x), 2.0 (3.x, whose bump changed only cut.py's
+# `precision` / `keyframe_snapped` meaning -- keys this adapter never reads; ADR-21). Reported, not gated on -- a
 # different value only matters if the flags below can no longer be read from it, and that is detected directly
-KNOWN_CONTRACT_VERSION = "1.0"
+KNOWN_CONTRACT_VERSIONS = ("1.0", "2.0")
+KNOWN_CONTRACT_VERSION = KNOWN_CONTRACT_VERSIONS[0]   # the oldest; the registry range starts here
 ENV_DIR_KEYS = ("COLOR_GRADING_FFMPEG_SKILL_DIR", "VIDEO_AGENT_FFMPEG_SKILL_DIR")
 TOOLS_USED = ("probe", "color")
 # argparse dests of the ffmpeg-skill tools this adapter emits on every call of some operation type; every one must be

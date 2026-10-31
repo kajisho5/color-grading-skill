@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from . import CONTRACT_SCHEMA_VERSION, DOCTOR_SCHEMA_VERSION, PACKAGE_NAME, REQUEST_SCHEMA_VERSION, RESPONSE_SCHEMA_VERSION, SKILL_ID, VERSION
-from .adapter import FLAG_ALTERNATIVES, FLAGS_USED, KNOWN_CONTRACT_VERSION, REQUIRED_FLAGS, TOOLS_USED
+from .adapter import FLAG_ALTERNATIVES, FLAGS_USED, KNOWN_CONTRACT_VERSION, KNOWN_CONTRACT_VERSIONS, REQUIRED_FLAGS, TOOLS_USED
 from .errors import ERROR_CODES, ERROR_TABLE, EXIT_CODES
 from .executor import DURATION_TOLERANCE, TOOL_FOR, WORK_DIR_NAME
 from .model import (CUBE_EXTENSIONS, FORBIDDEN_KEYS, ID_RE, MAX_LUT_BYTES, MAX_OPERATIONS, OPERATION_TYPES, OUTPUT_FORMATS, REF_RE,
@@ -37,8 +37,9 @@ def capability_provides() -> List[Dict[str, str]]:
 
 
 # The AI Video Production OS registry's `dependencies`: ffmpeg-skill, as a range of its contract_version (the one
-# version this adapter reads; ADR-19: what is actually needed is checked flag by flag, not by package version).
-FFMPEG_SKILL_CONTRACT_RANGE = f">={KNOWN_CONTRACT_VERSION} <{int(KNOWN_CONTRACT_VERSION.split('.')[0]) + 1}.0"
+# versions this adapter reads: 1.0 for ffmpeg-skill 1.x/2.x, 2.0 for 3.x, ADR-21; ADR-19: what is actually needed is
+# checked flag by flag, not by package version).
+FFMPEG_SKILL_CONTRACT_RANGE = f">={KNOWN_CONTRACT_VERSION} <{int(KNOWN_CONTRACT_VERSIONS[-1].split('.')[0]) + 1}.0"
 
 
 def dependencies() -> List[Dict[str, Any]]:
@@ -113,7 +114,7 @@ def skill_contract() -> Dict[str, Any]:
                       "executable_resolution": "ffmpeg-skill directory: --ffmpeg-skill, COLOR_GRADING_FFMPEG_SKILL_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR, "
                                                "~/.claude/skills/ffmpeg-skill, ./vendor/ffmpeg-skill, ../ffmpeg-skill; ffmpeg/ffprobe: PATH lookup by ffmpeg-skill",
                       "shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False, "ai": False},
-        "ffmpeg_skill": {"contract_version": KNOWN_CONTRACT_VERSION, "version_window": None,
+        "ffmpeg_skill": {"contract_version": KNOWN_CONTRACT_VERSION, "contract_versions_known": list(KNOWN_CONTRACT_VERSIONS), "version_window": None,
                          "compatibility": "capability detection, no version window: a checkout of any version is used when every required flag is "
                                           "present in its contract (or --help); doctor reports what was detected (docs/decisions.md ADR-19)",
                          "tools_used": list(TOOLS_USED), "flags_used": {k: list(v) for k, v in FLAGS_USED.items()},
