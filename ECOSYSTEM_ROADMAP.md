@@ -27,8 +27,9 @@ Agent wires 5 color_* skills through color-grading/run, but only exposure, contr
   - Done when: OS registry conformance shows the dependency
 - [x] **2. WHITE_BALANCE decision** — remove from `unsupported` or alias to temperature/tint (ADR)
   - Done when: no ambiguous entry
-- [ ] **3. (agent side) expose gamma/lift/gain/levels/curves** — tracked in video-production-agent
+- [x] **3. (agent side) expose gamma/lift/gain/levels/curves** — tracked in video-production-agent ([video-production-agent#80](https://github.com/kajisho5/video-production-agent/pull/80), [#91](https://github.com/kajisho5/video-production-agent/pull/91))
   - Done when: plan carries them to PRIMARY_CORRECTION
+  - Done (video-production-agent ADR-062 / ADR-076): `color.gamma` / `.lift` / `.gain` / `.levels_in_*` / `.levels_out_*` / `.curves` reach the PRIMARY_CORRECTION request by contract name; every `color.*` key, type, range and enum is read from the agent's pinned copy of this contract (0.4.0) and checked at plan time
 
 ---
 Engine for every media operation: [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) (42 tools, treated as complete). Orchestrator: [video-production-agent](https://github.com/kajisho5/video-production-agent).
