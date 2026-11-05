@@ -34,6 +34,15 @@ Agent wires 5 color_* skills through color-grading/run, every PRIMARY_CORRECTION
   - Done when: CI passes against 3.0.0 and the range includes it
 - [ ] **5. OCIO / ACES transforms** — new op `OCIO_TRANSFORM`: a colour-space conversion named by an OpenColorIO config (the ACES studio / CG configs, or the user's own `.ocio`), for example camera log → ACEScct → Rec.709 or Rec.2100 PQ, with an optional look and display / view. PyOpenColorIO (BSD-3-Clause, optional extra `ocio`) only bakes the transform to a 3D LUT of a stated size; the LUT is applied through ffmpeg-skill as LUT_APPLY already does, so the engine stays the only thing touching media. Provenance records the config's name, version and hash, the source / destination spaces and the LUT size. The ACES configs' own licence is checked in the ADR
   - Done when: ADR; a baked LUT matches OCIO's own CPU processor within 1/1023 on a test chart; the doctor reports `ocio` missing without breaking the other ops; the output's colour tags match the destination space
+- [ ] **6. Match cameras to a reference** — MATCH_CAMERA: from a frame pair of the same subject (camera B against camera A), fit a correction (per-channel curves, or a small 3D LUT) and write it as a LUT per camera; the residual colour difference (ΔE2000 on stated patches or the whole frame) is reported. Field review 2026-11-05 (Velisa ROADMAP, third round)
+  - なぜ要るか：会場の複数カメラの色の違いを、マルチカムの切り替えで目立たなくできる
+  - Done when: a fixture whose camera B is camera A with a known tint and gain matches within ΔE 2 on average
+- [ ] **7. Broadcast legal range and gamut** — LEGALIZE: soft-clip to BT.709 legal levels (8-bit 16-235 / 10-bit 64-940, chroma limits) and report the share of pixels out of range before and after; the limits follow EBU R103 when that profile is asked for
+  - なぜ要るか：放送局納品や中継の送出で、レベル外の信号で差し戻されない
+  - Done when: a fixture with super-whites ends within range and the report gives both shares
+- [ ] **8. Alpha-aware grading** — LUT_APPLY / PRIMARY_CORRECTION on a source with alpha keep the alpha unchanged, and a premultiplied source is un-premultiplied before the correction and premultiplied again after
+  - なぜ要るか：テロップや CG の色を変えても、縁が黒ずんだり白く浮いたりしない
+  - Done when: a premultiplied fixture's alpha is bit-identical after a LUT, and edge pixels have no dark fringe
 
 ---
 Engine for every media operation: [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) (3.x, 42 tools, contract_version 2.0; treated as complete, proposals go to Velisa's ROADMAP). Orchestrator: [video-production-agent](https://github.com/kajisho5/video-production-agent).
