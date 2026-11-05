@@ -85,6 +85,41 @@ def kill_tree(proc: "subprocess.Popen") -> None:
         proc.communicate(timeout=5)
     except Exception:
         pass
+    _wait_group_gone(proc)
+
+
+def _signal_group(proc: "subprocess.Popen") -> None:
+    """Kill a running tool's whole process group without waiting: safe inside a signal handler, where the main
+    thread may itself be blocked in proc.communicate(). The waiting (and the partial-output cleanup) happens in
+    the main thread once communicate() returns."""
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        # taskkill waits only for itself; the handler runs in the main thread between bytecodes, as before
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+
+def _wait_group_gone(proc: "subprocess.Popen", limit: float = 5.0) -> None:
+    """After SIGKILL to the group, wait until no member is left (POSIX). The direct child is reaped by
+    communicate(), but ffmpeg runs one level below it: until the kernel has torn it down it can still finish a
+    write or an open() that creates the output file, after the caller has removed the partial."""
+    if os.name == "nt":
+        return
+    deadline = time.monotonic() + limit
+    while time.monotonic() < deadline:
+        try:
+            os.killpg(proc.pid, 0)
+        except (ProcessLookupError, PermissionError):
+            return
+        time.sleep(0.01)
 
 
 def fmt_num(value: float, what: str = "value") -> str:
@@ -200,6 +235,7 @@ class FfmpegSkill:
         self._info: Optional[SkillInfo] = None
         self.runs: List[ToolRun] = []
         self._cancelled = False
+        self._proc: Optional["subprocess.Popen"] = None
 
     # ---- discovery
     @staticmethod
@@ -291,7 +327,19 @@ class FfmpegSkill:
 
     # ---- execution
     def cancel(self) -> None:
+        """Request cancellation (called from the CLI's signal handler). It never raises: the running tool, if any,
+        is killed, and the main thread raises CANCELLED at the next checkpoint (when that tool returns, or before
+        the next tool starts), inside the code that removes the partial output. Raising from the handler instead
+        interrupted arbitrary code, e.g. between a finished intermediate and its manifest, and left the
+        intermediate behind without one."""
         self._cancelled = True
+        proc = self._proc
+        if proc is not None:
+            _signal_group(proc)
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
 
     def _popen(self, argv: Sequence[str], timeout: Optional[float], cwd: Optional[str] = None) -> Tuple[int, str, str, float]:
         for a in argv:
@@ -305,6 +353,9 @@ class FfmpegSkill:
                                     text=True, errors="replace", env=_clean_env(), cwd=cwd or str(self.directory), **_group_kwargs())
         except FileNotFoundError as e:
             raise ColorError("TOOL_ERROR", f"cannot start {os.path.basename(argv[0])}: {e}", {"reason": "executable_missing"}, retryable=False)
+        self._proc = proc
+        if self._cancelled:   # the signal landed between the check above and the assignment
+            _signal_group(proc)
         try:
             out, err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
@@ -313,6 +364,11 @@ class FfmpegSkill:
         except KeyboardInterrupt:
             kill_tree(proc)
             self._cancelled = True
+            raise ColorError("CANCELLED", "interrupted while a tool was running", {"reason": "signal"})
+        finally:
+            self._proc = None
+        if self._cancelled:
+            kill_tree(proc)
             raise ColorError("CANCELLED", "interrupted while a tool was running", {"reason": "signal"})
         return proc.returncode, out or "", err or "", round(time.monotonic() - t0, 3)
 
