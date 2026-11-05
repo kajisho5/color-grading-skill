@@ -19,7 +19,7 @@ v0.4.0, Python. HDR_TO_SDR, LUT_APPLY, RETAG, STRIP_DOVI, PRIMARY_CORRECTION (ex
 
 ## Wiring
 
-Agent wires 5 color_* skills through color-grading/run, but only exposure, contrast, saturation, temperature, tint; gamma, lift, gain, levels, curves are not reachable. Delegates to ffmpeg-skill probe, color.
+Agent wires 5 color_* skills through color-grading/run, every PRIMARY_CORRECTION parameter included (exposure ... curves, read from its pinned 0.4.0 contract; step 3). Delegates to ffmpeg-skill probe, color; ffmpeg-skill 3.x accepted (step 4).
 
 ## Steps
 
@@ -32,6 +32,8 @@ Agent wires 5 color_* skills through color-grading/run, but only exposure, contr
   - Done (video-production-agent ADR-062 / ADR-076): `color.gamma` / `.lift` / `.gain` / `.levels_in_*` / `.levels_out_*` / `.curves` reach the PRIMARY_CORRECTION request by contract name; every `color.*` key, type, range and enum is read from the agent's pinned copy of this contract (0.4.0) and checked at plan time
 - [x] **4. ffmpeg-skill 3.0.0** — [#26](https://github.com/kajisho5/color-grading-skill/pull/26) — accept its contract_version 2.0; Python 3.9 CI against the last 2.x (ADR-21)
   - Done when: CI passes against 3.0.0 and the range includes it
+- [ ] **5. OCIO / ACES transforms** — new op `OCIO_TRANSFORM`: a colour-space conversion named by an OpenColorIO config (the ACES studio / CG configs, or the user's own `.ocio`), for example camera log → ACEScct → Rec.709 or Rec.2100 PQ, with an optional look and display / view. PyOpenColorIO (BSD-3-Clause, optional extra `ocio`) only bakes the transform to a 3D LUT of a stated size; the LUT is applied through ffmpeg-skill as LUT_APPLY already does, so the engine stays the only thing touching media. Provenance records the config's name, version and hash, the source / destination spaces and the LUT size. The ACES configs' own licence is checked in the ADR
+  - Done when: ADR; a baked LUT matches OCIO's own CPU processor within 1/1023 on a test chart; the doctor reports `ocio` missing without breaking the other ops; the output's colour tags match the destination space
 
 ---
-Engine for every media operation: [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) (42 tools, treated as complete). Orchestrator: [video-production-agent](https://github.com/kajisho5/video-production-agent).
+Engine for every media operation: [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) (3.x, 42 tools, contract_version 2.0; treated as complete, proposals go to Velisa's ROADMAP). Orchestrator: [video-production-agent](https://github.com/kajisho5/video-production-agent).
