@@ -82,6 +82,7 @@ def destination_key(params: Dict[str, Any]) -> str:
 
 @dataclass
 class BakedLut:
+    kind = "ocio"                 # the key its provenance is reported under
     text: str
     sha256: str
     lut_size: int
@@ -178,8 +179,10 @@ def _apply(cpu: Any, flat: List[float], chunk: int = 3 * 65536) -> List[float]:
     return out
 
 
-def cube_text(values: Sequence[float], n: int, title: str = "color-grading OCIO_TRANSFORM") -> str:
+def cube_text(values: Sequence[float], n: int, title: str = "color-grading OCIO_TRANSFORM", domain: Optional[Tuple[float, float]] = None) -> str:
     lines = [f'TITLE "{title}"', f"LUT_3D_SIZE {n}"]
+    if domain is not None:
+        lines += [f"DOMAIN_MIN {domain[0]:g} {domain[0]:g} {domain[0]:g}", f"DOMAIN_MAX {domain[1]:g} {domain[1]:g} {domain[1]:g}"]
     lines += [f"{values[i]:.6f} {values[i + 1]:.6f} {values[i + 2]:.6f}" for i in range(0, len(values), 3)]
     return "\n".join(lines) + "\n"
 

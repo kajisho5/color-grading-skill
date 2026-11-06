@@ -22,6 +22,8 @@ ffmpeg directly; the skill under test never does. Every fixture has a known cons
                 (the matrix ffmpeg-skill/look and --lut read it back with): the reference camera of MATCH_CAMERA
   camera_b.mp4  the same frames as camera_a with a known per-channel gain and tint in RGB code values before the same
                 conversion: R x0.86, G x0.97 + 10, B x0.90 + 6 (CAMERA_B_GAIN / CAMERA_B_OFFSET), i.e. camera B
+  super_white.mp4  2 s 320x180 H.264 yuv420p written directly as Y'CbCr: luma ramps 4..254 left to right (sub-blacks
+                and super-whites, outside BT.709's 16-235), chroma a smooth +-60 swing around 128 -- for LEGALIZE
   audio.wav     2 s mono PCM tone, no video stream (audio-only)
   text.txt      not media
   invert.cube   a 3D LUT (size 2) that exactly inverts every channel (output = 1 - input); trilinear/tetrahedral
@@ -83,7 +85,7 @@ def build_all(directory: Path) -> Dict[str, Path]:
     d.mkdir(parents=True, exist_ok=True)
     f = {k: d / v for k, v in {"sdr": "sdr.mp4", "sdr_noaudio": "sdr_noaudio.mp4", "hevc_sdr": "hevc_sdr.mp4", "hdr": "hdr.mp4",
                                "sdr_with_subs": "sdr_with_subs.mp4", "multi_audio": "multi_audio.mp4",
-                               "camera_a": "camera_a.mp4", "camera_b": "camera_b.mp4", "audio": "audio.wav", "text": "text.txt", "invert_cube": "invert.cube"}.items()}
+                               "camera_a": "camera_a.mp4", "camera_b": "camera_b.mp4", "super_white": "super_white.mp4", "audio": "audio.wav", "text": "text.txt", "invert_cube": "invert.cube"}.items()}
     _run(["-f", "lavfi", "-i", SOLID, "-f", "lavfi", "-i", f"aevalsrc='{TONE}':s=48000", "-t", "3",
           "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(f["sdr"])])
     _run(["-f", "lavfi", "-i", SOLID, "-t", "2", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(f["sdr_noaudio"])])
@@ -108,6 +110,8 @@ def build_all(directory: Path) -> Dict[str, Path]:
     for key, chain in (("camera_a", f"format=rgb24,{_TO_709}"), ("camera_b", f"format=rgb24,lutrgb={lut},{_TO_709}")):
         _run(["-f", "lavfi", "-i", "testsrc2=s=320x180:rate=25", "-t", "2", "-vf", chain, "-c:v", "libx264", "-preset", "veryfast", "-crf", "12",
               str(f[key])])
+    _run(["-f", "lavfi", "-i", "nullsrc=s=320x180:rate=25,format=yuv420p,geq=lum='4+250*X/W':cb='128+60*sin(2*PI*Y/H)':cr='128+60*cos(2*PI*X/W)'",
+          "-t", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "12", str(f["super_white"])])
     _run(["-f", "lavfi", "-i", f"aevalsrc='{TONE}':s=48000:c=mono", "-t", "2", "-c:a", "pcm_s16le", str(f["audio"])])
     f["text"].write_text("not media\n", encoding="utf-8")
     f["invert_cube"].write_text(INVERT_CUBE, encoding="utf-8")

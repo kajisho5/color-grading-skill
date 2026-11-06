@@ -29,7 +29,7 @@ CONTRACT_SCHEMA_ID = f"{SKILL_ID}/contract@{CONTRACT_SCHEMA_VERSION}"
 CAPABILITY_IDS: Dict[str, str] = {
     "HDR_TO_SDR": "color.hdr_to_sdr", "LUT_APPLY": "color.lut_apply", "RETAG": "color.retag", "STRIP_DOVI": "color.strip_dovi",
     "PRIMARY_CORRECTION": "color.primary_correction", "OCIO_TRANSFORM": "color.ocio_transform",
-    "MATCH_CAMERA": "color.match_camera",
+    "MATCH_CAMERA": "color.match_camera", "LEGALIZE": "color.legalize",
 }
 
 
