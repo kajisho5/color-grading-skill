@@ -212,6 +212,13 @@ def check_tools(tools: Dict[str, Dict[str, Any]]) -> Tuple[List[str], Dict[str, 
             problems.append(f"ffmpeg-skill/{tool} lacks flag(s) {missing}")
         if tool == "color":
             features["overwrite_flag"] = "overwrite" in props
+            # whether --retag rewrites an H.264 stream's own colour description (h264_metadata, ffmpeg-skill >= 1.x) or only
+            # the container hint, which a stream that already carries a VUI ignores (0.12.3). Read from the capabilities
+            # the contract declares; None when the contract has none to read (--help fallback). OCIO_TRANSFORM needs it
+            # to tag a non-BT.709 destination on the H.264 --lut writes (ADR-22)
+            caps = (spec.get("capabilities") or {}).get("optional") if isinstance(spec.get("capabilities"), dict) else None
+            features["retag_rewrites_h264_tags"] = (any(isinstance(c, dict) and c.get("capability") == "bsf:h264_metadata" for c in caps)
+                                                    if isinstance(caps, list) else None)
             if "video_required" in spec and spec.get("video_required") is not True:
                 problems.append("ffmpeg-skill/color does not declare video_required")
     return problems, features

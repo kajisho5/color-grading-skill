@@ -26,6 +26,7 @@ from .adapter import FfmpegSkill, ToolRun, fmt_num, probe_hdr
 from .canonical import sha256_file, stable_hash
 from .errors import ColorError
 from .graph import Node, OperationGraph
+from . import ocio as ocio_mod
 from .model import CUBE_EXTENSIONS, MAX_LUT_BYTES, OUTPUT_FORMATS, RETAG_TAGS, ColorRequest, parse_request
 from .security import PathPolicy
 
@@ -43,7 +44,15 @@ TOOL_FOR: Dict[str, Tuple[str, List[str]]] = {
     "STRIP_DOVI": ("color", ["bsf:filter_units"]),
     "PRIMARY_CORRECTION": ("color", ["filter:exposure", "filter:eq", "filter:colorbalance", "filter:colortemperature", "filter:colorlevels",
                                      "filter:curves", "encoder:libx264"]),
+    # baked by PyOpenColorIO (a Python capability of this skill, not of ffmpeg-skill), applied by color --lut, tagged by
+    # color --retag when the --lut output does not already carry the destination's tags (ADR-22)
+    "OCIO_TRANSFORM": ("color", [ocio_mod.CAPABILITY, "ffmpeg-skill/color:retag-h264-vui", "filter:lut3d", "encoder:libx264"]),
 }
+# capabilities this skill provides itself (Python modules), not detected through ffmpeg-skill's doctor
+PYTHON_CAPABILITIES = (ocio_mod.CAPABILITY,)
+# capabilities read from the located ffmpeg-skill's contract by the adapter (SkillInfo.features), not from its doctor:
+# capability -> feature key
+CHECKOUT_CAPABILITIES = {"ffmpeg-skill/color:retag-h264-vui": "retag_rewrites_h264_tags"}
 
 
 @dataclass
@@ -96,6 +105,8 @@ class NodeState:
     dropped_non_av_streams: Optional[bool] = None  # ffmpeg-skill/color's own "did I drop subtitle/data streams" signal (>= 0.12.0)
     error: Optional[Dict[str, Any]] = None
     input_hash: Optional[str] = None
+    ocio: Optional[Any] = None                     # ocio.BakedLut (OCIO_TRANSFORM only)
+    retagged: Optional[bool] = None                # OCIO_TRANSFORM: whether a --retag pass was needed for the destination's tags
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {"node_id": self.node.node_id, "operation_id": self.identity, "type": self.node.type,
@@ -105,6 +116,10 @@ class NodeState:
         d["artifact"] = self.artifact.to_dict() if self.artifact else None
         if self.lut is not None:
             d["lut"] = self.lut.to_dict()
+        if self.ocio is not None:
+            d["ocio"] = self.ocio.provenance()
+        if self.retagged is not None:
+            d["retagged"] = self.retagged
         d["tool_commands_observed"] = list(self.tool_commands)
         d["measurements"] = self.measurements
         if self.reencoded is not None:
@@ -199,7 +214,32 @@ class Executor:
                 raise ColorError("INVALID_INPUT", f"operation {op.op_id!r}: LUT is larger than {MAX_LUT_BYTES} bytes", {"op_id": op.op_id, "path": str(lut_path), "size": size})
             luts[f"op:{op.op_id}"] = LutInfo(lut_path, size, sha256_file(str(lut_path)))
 
-        overrides = {nid: {"lut_path": info.sha256} for nid, info in luts.items()}
+        overrides: Dict[str, Dict[str, Any]] = {nid: {"lut_path": info.sha256} for nid, info in luts.items()}
+        # OCIO_TRANSFORM: baked up front (pure computation, also under dry-run, nothing written) so the identity can
+        # depend on the LUT's content and the config's, not on a config's path or the "latest" alias (ADR-22)
+        baked: Dict[str, Any] = {}
+        for op in project.operations:
+            if op.type != "OCIO_TRANSFORM":
+                continue
+            config_path = None
+            if not op.parameters["config"].startswith(ocio_mod.BUILTIN_PREFIX):
+                config_path = self.policy.resolve_lut(op.parameters["config"], f"operation {op.op_id!r} config")
+            try:
+                baked[f"op:{op.op_id}"] = ocio_mod.bake(op.parameters, config_path)
+            except ColorError as e:
+                e.details.setdefault("op_id", op.op_id)
+                raise
+            b = baked[f"op:{op.op_id}"]
+            info = getattr(self.skill, "_info", None)
+            if info is not None and info.features.get("retag_rewrites_h264_tags") is False:
+                # neither step can guarantee the destination's tags on this checkout (0.12.3): its --lut output's tags
+                # depend on the FFmpeg build (all three BT.709 on 6.1, only the matrix on 8.0) and its --retag only writes a
+                # container hint that a tagged H.264 stream overrides. Refused before anything is encoded (ADR-22)
+                raise ColorError("TOOL_ERROR", f"operation {op.op_id!r}: OCIO_TRANSFORM needs ffmpeg-skill/color --retag to rewrite an H.264 stream's "
+                                 "colour description (bsf:h264_metadata), which this ffmpeg-skill does not declare, so the destination's colour tags "
+                                 f"({op.parameters['output_tags']}) cannot be guaranteed; update ffmpeg-skill", {"op_id": op.op_id, "reason": "retag_cannot_rewrite_tags",
+                                 "ffmpeg_skill": info.version}, retryable=False)
+            overrides[f"op:{op.op_id}"] = {"config": b.config["sha256"], "lut_sha256": b.sha256}
         identities = graph.identities(source["sha256"], self.tool_versions, overrides)
         states: Dict[str, NodeState] = {}
         for n in graph.order:
@@ -208,6 +248,9 @@ class Executor:
             st.tool, st.capabilities = self._select_tool(node)
             if n in luts:
                 st.lut = luts[n]
+            if n in baked:
+                st.ocio = baked[n]
+                st.lut = LutInfo(work_dir / f"{st.identity[:16]}.cube", len(baked[n].text.encode("utf-8")), baked[n].sha256)
             states[n] = st
         self._states = states
 
@@ -290,7 +333,9 @@ class Executor:
         steps = [{"node_id": n, "operation_id": states[n].identity, "type": states[n].node.type, "tool": f"ffmpeg-skill/{states[n].tool}",
                   "input": states[n].node.inputs[0] if states[n].node.inputs else None, "parameters": states[n].node.parameters,
                   "intermediate": str(self._intermediate_path(work_dir, states[n], resolved_source.suffix)),
-                  "lut": states[n].lut.to_dict() if states[n].lut else None} for n in graph.order if states[n].node.type != "SOURCE"]
+                  "lut": states[n].lut.to_dict() if states[n].lut else None,
+                  **({"ocio": states[n].ocio.provenance()} if states[n].ocio is not None else {})}
+                 for n in graph.order if states[n].node.type != "SOURCE"]
         return {"plan_id": plan_id, "project_id": project.project_id, "work_dir": str(work_dir), "graph": graph.to_dict(),
                 "source": {k: v for k, v in source.items()},
                 "steps": steps,
@@ -309,7 +354,7 @@ class Executor:
         info = getattr(self.skill, "_info", None)
         return info.quality_flag if info is not None else "--crf"
 
-    def _argv(self, st: NodeState, src: str, out_path: Path) -> List[str]:
+    def _argv(self, st: NodeState, src: str, out_path: Path, hdr_input: bool = False) -> List[str]:
         """One ffmpeg-skill/color invocation (argv without the script and --json). Every value is a fixed flag, a
         formatted number, an enum member already validated against the model schema, or a resolved absolute path;
         nothing from the request is passed through verbatim as a filter or shell fragment."""
@@ -317,6 +362,15 @@ class Executor:
         if node.type == "HDR_TO_SDR":
             args = [src, "--to-sdr", "--tonemap", p["tonemap"], "--peak", fmt_num(p["peak_nits"]), "--desat", fmt_num(p["desat"])]
             if p["force"]:
+                args.append("--force")
+            args += ["--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], "-o", o]
+            return args
+        if node.type == "OCIO_TRANSFORM":
+            assert st.lut is not None
+            args = [src, "--lut", self._lut_arg(st.lut.path)]
+            if hdr_input:
+                # the LUT was baked for the source space the caller named (e.g. Rec.2100-PQ): ffmpeg-skill refuses an
+                # HDR-tagged input to --lut without --force, which exists for exactly this case
                 args.append("--force")
             args += ["--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], "-o", o]
             return args
@@ -375,33 +429,77 @@ class Executor:
         if reuse and self._reusable(st, out_path, manifest):
             st.status = "reused"
             return
-        for stale in (out_path, manifest):
+        graded = out_path.with_name(out_path.stem + ".graded" + out_path.suffix) if node.type == "OCIO_TRANSFORM" else out_path
+        for stale in (out_path, manifest, graded):
             if stale.exists():
                 stale.unlink()
         try:
-            argv = self._argv(st, self._artifact_path(upstream), out_path)
+            if st.ocio is not None:
+                self._write_baked_lut(st)
+            hdr_input = bool(upstream.artifact.hdr) if upstream.artifact else False
+            argv = self._argv(st, self._artifact_path(upstream), graded, hdr_input)
             # LUT_APPLY runs with cwd at the LUT's own directory so --lut can be a bare file name (see _lut_arg):
             # no drive letter, no colon, regardless of what drive the LUT/workspace/ffmpeg-skill checkout are on
             cwd = str(st.lut.path.parent) if st.lut is not None else None
             run = self.skill.run_tool("color", argv, timeout, cwd=cwd)
-            st.seconds += run.seconds
-            st.tool_commands += run.commands
-            if isinstance(run.data.get("measurements"), dict):
-                st.measurements = dict(run.data["measurements"])
-            if "reencoded" in run.data:
-                st.reencoded = bool(run.data["reencoded"])
-            if "dropped_non_av_streams" in run.data:
-                st.dropped_non_av_streams = bool(run.data["dropped_non_av_streams"])
+            self._absorb(st, run)
+            if node.type == "OCIO_TRANSFORM":
+                self._tag_destination(st, graded, out_path, timeout)
             st.artifact = self._validate_artifact(out_path, st, source)
         except ColorError:
             self._remove_partial(out_path)
+            if graded != out_path:
+                self._remove_partial(graded)
             raise
         manifest.write_text(json.dumps({"schema": MANIFEST_SCHEMA, "operation_id": st.identity, "type": node.type, "parameters": node.parameters,
                                         "input_hash": st.input_hash, "lut": st.lut.to_dict() if st.lut else None, "artifact": st.artifact.to_dict(),
                                         "measurements": st.measurements, "reencoded": st.reencoded, "dropped_non_av_streams": st.dropped_non_av_streams,
+                                        "retagged": st.retagged, "ocio": st.ocio.provenance() if st.ocio is not None else None,
                                         "tool": f"ffmpeg-skill/{st.tool}", "tool_versions": dict(self.tool_versions),
                                         "skill": SKILL_ID, "skill_version": VERSION}, indent=2, sort_keys=True), encoding="utf-8")
         st.status = "completed"
+
+    def _absorb(self, st: NodeState, run: ToolRun) -> None:
+        st.seconds += run.seconds
+        st.tool_commands += run.commands
+        if isinstance(run.data.get("measurements"), dict):
+            st.measurements = dict(run.data["measurements"])
+        if "reencoded" in run.data:
+            st.reencoded = bool(run.data["reencoded"])
+        if "dropped_non_av_streams" in run.data:
+            st.dropped_non_av_streams = bool(run.data["dropped_non_av_streams"])
+
+    @staticmethod
+    def _write_baked_lut(st: NodeState) -> None:
+        """The baked .cube next to the intermediates, written once per identity; its bytes are checked against the
+        hash the identity was computed from, so what ffmpeg-skill reads is exactly what provenance names."""
+        assert st.lut is not None and st.ocio is not None
+        path = st.lut.path
+        if path.is_file() and sha256_file(str(path)) == st.ocio.sha256:
+            return
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_bytes(st.ocio.text.encode("utf-8"))
+        os.replace(str(tmp), str(path))
+        if sha256_file(str(path)) != st.ocio.sha256:
+            raise ColorError("INTERNAL_ERROR", "baked LUT on disk does not match its hash", {"path": str(path)})
+
+    def _tag_destination(self, st: NodeState, graded: Path, out_path: Path, timeout: Optional[float]) -> None:
+        """OCIO_TRANSFORM's second step: the --lut output carries ffmpeg-skill's BT.709 tags; when the destination
+        needs other tags (Rec.2100 PQ / HLG), ffmpeg-skill/color --retag rewrites them (a stream copy). The tags are
+        measured on the result by _validate_artifact either way."""
+        want = RETAG_TAGS[st.node.parameters["output_tags"]]
+        video = self.skill.probe(str(graded)).get("video") or {}
+        got = (video.get("color_space"), video.get("color_primaries"), video.get("color_transfer"))
+        if got == want:
+            os.replace(str(graded), str(out_path))
+            st.retagged = False
+            return
+        run = self.skill.run_tool("color", [str(graded), "--retag", st.node.parameters["output_tags"], "--audio-stream",
+                                            str(st.node.parameters["audio_stream"]), "-o", str(out_path)], timeout)
+        self._absorb(st, run)
+        st.reencoded = None
+        st.retagged = True
+        self._remove_partial(graded)
 
     def _reusable(self, st: NodeState, out_path: Path, manifest: Path) -> bool:
         if not (out_path.is_file() and manifest.is_file()):
@@ -421,7 +519,10 @@ class Executor:
         st.measurements = dict(m.get("measurements") or {})
         st.reencoded = m.get("reencoded")
         st.dropped_non_av_streams = m.get("dropped_non_av_streams")
+        st.retagged = m.get("retagged")
         st.tool_commands = []
+        if st.ocio is not None:
+            self._write_baked_lut(st)
         return True
 
     @staticmethod
@@ -471,7 +572,13 @@ class Executor:
             if got != (want_space, want_prim, want_trc):
                 raise ColorError("VALIDATION_ERROR", f"{what}: output colour tags {got} do not match the requested target {(want_space, want_prim, want_trc)}",
                                  {"reason": "retag_mismatch", "path": str(path), "got": list(got), "want": [want_space, want_prim, want_trc]})
-        if st.node.type == "LUT_APPLY" and video.get("pix_fmt") != "yuv420p":
+        if st.node.type == "OCIO_TRANSFORM":
+            want = RETAG_TAGS[st.node.parameters["output_tags"]]
+            got = (video.get("color_space"), video.get("color_primaries"), video.get("color_transfer"))
+            if got != want:
+                raise ColorError("VALIDATION_ERROR", f"{what}: output colour tags {got} do not match the destination's {want} ({st.node.parameters['output_tags']})",
+                                 {"reason": "destination_tags_mismatch", "path": str(path), "got": list(got), "want": list(want)})
+        if st.node.type in ("LUT_APPLY", "OCIO_TRANSFORM") and video.get("pix_fmt") != "yuv420p":
             raise ColorError("VALIDATION_ERROR", f"{what}: output pixel format {video.get('pix_fmt')!r} is not 'yuv420p'", {"reason": "pix_fmt_mismatch", "path": str(path)})
         # subtitle/data-stream survival: ffmpeg-skill >= 0.12.1 tries to keep a source's subtitle/data streams
         # through every re-encoding colour operation and says so honestly (dropped_non_av_streams) when it could
@@ -554,6 +661,10 @@ class Executor:
                      "parameters": s.node.parameters, "input_hash": s.input_hash, "output_hash": s.artifact.sha256 if s.artifact else None}
             if s.lut is not None:
                 entry["lut"] = s.lut.to_dict()
+            if s.ocio is not None:
+                entry["ocio"] = s.ocio.provenance()
+            if s.retagged is not None:
+                entry["retagged"] = s.retagged
             if s.measurements:
                 entry["measurements"] = s.measurements
             if s.reencoded is not None:

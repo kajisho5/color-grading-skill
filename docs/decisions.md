@@ -247,3 +247,65 @@
     main jobs (Linux, Windows, macOS) already ran Python 3.11 with FFmpeg ≥ 6.1.
   - *Re-pin.* `dependencies[].version_range` changes, so a consumer holding a copy of this contract
     (video-production-agent) sees the new range when it re-pins.
+- **ADR-22 `OCIO_TRANSFORM`: an OpenColorIO transform baked to a 3D LUT by the optional PyOpenColorIO, applied by
+  ffmpeg-skill.** ECOSYSTEM_ROADMAP.md step 5. Camera log → ACEScct → Rec.709 or Rec.2100 PQ is a colour-space
+  conversion that a config defines exactly; asking the caller to find or bake a `.cube` for it moved the colour
+  science out of any record.
+  - *Request.* `config` (an `ocio://` built-in, default `ocio://studio-config-latest`, or a `.ocio` path resolved
+    through the LUT path policy), `source_space`, then either `destination_space` or `display` + `view`, an optional
+    `look`, `lut_size` (17 / 33 / 65 / 129, default 65), `output_tags` (a RETAG target) and the encode parameters.
+    Validation needs no OpenColorIO: one destination, display with view, a config that is a built-in or `.ocio`.
+    Names are checked against the loaded config at planning (`INVALID_REQUEST` listing the config's own names).
+  - *Output tags are known, never guessed.* `ocio.KNOWN_DESTINATION_TAGS` maps the unambiguous destinations
+    (`Rec.1886 Rec.709 - Display`, `Gamma 2.4 Encoded Rec.709`, `Camera Rec.709` → bt709; `Rec.2100-PQ - Display` →
+    bt2020-pq; `Rec.2100-HLG - Display` → bt2020-hlg). Any other destination needs `output_tags`; one that
+    contradicts the table is refused. sRGB, P3 and log destinations have no RETAG target with their transfer, so
+    they are never tagged silently as BT.709.
+  - *Who touches media.* PyOpenColorIO only evaluates the transform on the cube's nodes (red fastest, clamped to
+    [0, 1], six decimals) at planning, also under dry-run, and nothing is written then. At execution the cube is
+    written to the work directory (its bytes checked against the hash the identity used) and applied by
+    ffmpeg-skill/color `--lut` (with `--force` on an HDR-tagged input, which `--lut` otherwise refuses); when the
+    `--lut` output (BT.709-tagged H.264) does not carry the destination's tags, `--retag <output_tags>` rewrites
+    them. The tags are then measured on the result (`destination_tags_mismatch` otherwise), as RETAG's are.
+  - *Identity and provenance.* The identity replaces `config` with the config's serialized sha256 and adds the
+    baked LUT's sha256, so the `latest` alias or a moved `.ocio` file does not change it and a library or config
+    update that changes the numbers does. Provenance (`ocio`) records the library version, the config (built-in
+    requested and resolved name, or path and file sha256; name, profile version, serialized sha256), the transform,
+    `lut_size`, `lut_sha256`, how many LUT values were clamped, and `accuracy`. A `.ocio` file's external LUT files
+    are not hashed one by one; their effect is in `lut_sha256`.
+  - *Accuracy is measured on every bake.* The cube is interpolated tetrahedrally (lut3d's `interp=tetrahedral`,
+    which ffmpeg-skill asks for) and compared with OpenColorIO's own CPU processor on a test chart: the 24
+    ColorChecker patches at −2..+2 stops plus an 18 % grey ramp from −10 to +8 stops, scene-linear Rec.709 encoded
+    into the source space by the config (points outside [0, 1] after encoding are left out). Measured with OCIO
+    2.6.0's studio config (max error in 1/1023): S-Log3 S-Gamut3.Cine → Rec.709 ACES 2.0 SDR 6.98 at 33³, 2.73 at
+    65³, 0.83 at 129³; ACEScct → same 16.8 / 5.09 / 0.84; ARRI LogC4 → Rec.2100 PQ 1000 nits 5.13 / 1.89 / 0.90;
+    V-Log → ACEScct 2.73 / 0.74 / 0.17. So **within 1/1023 holds at `lut_size` 129** for the ACES display
+    transforms, and is what the test asserts (the cube read back from its text). 65 stays the default (8 MB of
+    text against 58 MB) and reports its own error; ffmpeg's `.cube` reader takes no 1D shaper, which is what would
+    let a smaller cube reach it. A transform that clips (a colorimetric conversion to a smaller gamut) is not
+    within 1/1023 at any size near the clip, because the cube interpolates between clamped nodes.
+  - *Optional extra.* `pip install 'color-grading-skill[ocio]'` (`opencolorio>=2.3`, the first release with the
+    built-in studio config). Without it, `doctor` reports `checks.ocio.status: missing` with the install hint,
+    `python:PyOpenColorIO` unsupported, `OCIO_TRANSFORM` in `unavailable_operations` (status `degraded`, never
+    `fail`), and every other operation unchanged; a run of `OCIO_TRANSFORM` is `TOOL_ERROR`
+    (`reason: ocio_missing`), any other run is unaffected. CI installs the extra on every job, so its tests run.
+  - *ffmpeg-skill behaviour that has no flag.* Two things OCIO_TRANSFORM depends on are behaviour, not flags
+    (ADR-19 gates only on flags): (1) `--retag` rewrites an H.264 stream's own colour description only where the
+    checkout declares `bsf:h264_metadata` (from 1.x; 0.12.3 only writes the container hint, which ffprobe does not
+    report over the stream's VUI). The adapter reads that capability from the contract
+    (`detected.retag_rewrites_h264_tags`, capability `ffmpeg-skill/color:retag-h264-vui`). On such a checkout no
+    destination's tags can be guaranteed: its `--lut` output is tagged by the FFmpeg build (all three BT.709 with
+    FFmpeg 6.1, only the matrix with 8.0, measured in CI) and its `--retag` cannot repair that. So `OCIO_TRANSFORM` is
+    unsupported there: `doctor` lists the capability as missing, and a run (or a plan) is refused before anything is
+    encoded (`TOOL_ERROR`, `retag_cannot_rewrite_tags`) instead of writing a file that fails validation or, worse,
+    one tagged by chance. Every other operation is unaffected. (2) Before ffmpeg-skill
+    3.1.6, `--lut` converts to RGB with BT.709 and back with BT.601 (its #410): every LUT, a baked one included,
+    lands on shifted colours. `doctor` warns for such a version; CI's main jobs run ffmpeg-skill main.
+  - *Licences.* PyOpenColorIO is BSD-3-Clause (the wheel's LICENSE, "Copyright Contributors to the OpenColorIO
+    Project"). The built-in ACES configs are compiled into that library and ship under the same file; nothing of
+    them is vendored here, and a baked LUT is derived data. The upstream OpenColorIO-Config-ACES repository (which
+    publishes the configs, BSD-3-Clause as far as this repository knows) could not be read from the session that
+    wrote this ADR, so its LICENSE file was not re-read here.
+  - *Contract.* New operation and Capability id `color.ocio_transform` (EXPERIMENTAL), `optional_dependencies`
+    (`ocio`), an `ocio` block; `dependencies` (ffmpeg-skill only, required) unchanged. Additive: a consumer pinned to
+    the previous contract sees one operation more when it re-pins.

@@ -67,7 +67,10 @@ edited at the same path does not. `plan_id` hashes every node identity plus the 
    (`executor._argv`): `HDR_TO_SDR` → `--to-sdr --tonemap … --peak … --desat … [--force] --crf … --preset …`
    (`--quality` in place of `--crf` wherever the located ffmpeg-skill offers it, ADR-19);
    `LUT_APPLY` → `--lut <resolved path> --lut-strength … --crf … --preset …`; `RETAG` → `--retag <target>`;
-   `STRIP_DOVI` → `--strip-dovi`; `PRIMARY_CORRECTION` → `--correct --exposure … --contrast … --saturation …
+   `STRIP_DOVI` → `--strip-dovi`; `OCIO_TRANSFORM` → `--lut <baked .cube>` (+ `--force` on an HDR-tagged input) and,
+   when the destination's tags are not the BT.709 `--lut` writes, `--retag <output_tags>` (ADR-22: PyOpenColorIO only
+   evaluates the transform on the cube's nodes, before execution, also under dry-run; nothing it does touches media);
+   `PRIMARY_CORRECTION` → `--correct --exposure … --contrast … --saturation …
    --temperature … --tint … --gamma … --lift … --gain … --levels-in-black … --levels-in-white …
    --levels-out-black … --levels-out-white … [--curves <preset>] --crf … --preset …` (`--curves` is only added when
    the caller set it; every other flag is always emitted, matching ffmpeg-skill's own always-present chain). For

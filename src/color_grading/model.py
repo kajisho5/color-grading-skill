@@ -22,7 +22,9 @@ levels_out_black / levels_out_white / curves) the same way, still never a raw fi
 ADR-18). WHITE_BALANCE is an alias (OPERATION_ALIASES), not an operation type of its own: it is accepted as a
 request `type`, restricted to PRIMARY_CORRECTION's temperature / tint (plus the encode and audio-stream parameters),
 and resolved to PRIMARY_CORRECTION at validation, so everything downstream (graph, identity, provenance) only ever
-sees PRIMARY_CORRECTION (docs/decisions.md ADR-20). This package will never work around a genuine ffmpeg-skill gap
+sees PRIMARY_CORRECTION (docs/decisions.md ADR-20). OCIO_TRANSFORM (ADR-22) is the one operation that is two
+ffmpeg-skill/color calls: `--lut` with a LUT this skill baked from an OpenColorIO config (a computation on the cube's
+nodes, never on media), then `--retag` when the destination's colour tags are not the BT.709 `--lut` writes. This package will never work around a genuine ffmpeg-skill gap
 by improvising a raw ffmpeg filter string of its own (that would cross the ffmpeg-skill boundary, see
 docs/architecture.md)."""
 from __future__ import annotations
@@ -34,6 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import REQUEST_SCHEMA_VERSION, SKILL_ID
 from .errors import ColorError
+from .ocio import BUILTIN_PREFIX, CONFIG_EXTENSIONS, DEFAULT_CONFIG, DEFAULT_LUT_SIZE, KNOWN_DESTINATION_TAGS, LUT_SIZES
 
 REQUEST_SCHEMA_ID = f"{SKILL_ID}/request@{REQUEST_SCHEMA_VERSION}"
 ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -128,6 +131,23 @@ OPERATION_TYPES: Dict[str, Dict[str, Any]] = {
         "levels_out_black": {"type": _INT, "required": False, "min": 0, "max": 255, "default": 0, "description": "colorlevels output black point, 0..255 (8-bit units); 0 is unchanged"},
         "levels_out_white": {"type": _INT, "required": False, "min": 0, "max": 255, "default": 255, "description": "colorlevels output white point, 0..255 (8-bit units); 255 is unchanged"},
         "curves": {"type": _STR, "required": False, "enum": list(CURVES_PRESETS), "default": None, "description": "curves filter built-in preset; None (default) adds no curves term"},
+        **_ENCODE_PARAMS, **_AUDIO_STREAM_PARAM}},
+    "OCIO_TRANSFORM": {"description": "Colour-space conversion named by an OpenColorIO config (the built-in ACES studio / CG configs or a .ocio file): "
+                       "source space -> destination space, or source space -> display / view, with an optional look. PyOpenColorIO (optional "
+                       "extra `ocio`) bakes it to a 3D .cube LUT of the stated size; ffmpeg-skill/color --lut applies it and --retag writes the "
+                       "destination's colour tags (docs/decisions.md ADR-22)", "parameters": {
+        "config": {"type": _STR, "required": False, "default": DEFAULT_CONFIG, "description": "an OpenColorIO built-in config URI (ocio://studio-config-latest, "
+                   "ocio://cg-config-latest, or a versioned ocio://...-config-v... name) or the path of a .ocio file, resolved through the LUT PathPolicy"},
+        "source_space": {"type": _STR, "required": True, "description": "colour space of the input pixels, as the config names it (e.g. 'S-Log3 S-Gamut3.Cine', 'ACEScct')"},
+        "destination_space": {"type": _STR, "required": False, "default": None, "description": "destination colour space; give this or display + view"},
+        "display": {"type": _STR, "required": False, "default": None, "description": "destination display (e.g. 'Rec.1886 Rec.709 - Display'); needs view"},
+        "view": {"type": _STR, "required": False, "default": None, "description": "view of the display (e.g. 'ACES 2.0 - SDR 100 nits (Rec.709)'); needs display"},
+        "look": {"type": _STR, "required": False, "default": None, "description": "an optional look of the config, applied before the destination"},
+        "lut_size": {"type": _INT, "required": False, "enum": list(LUT_SIZES), "default": DEFAULT_LUT_SIZE, "description": "edge length of the baked 3D LUT; "
+                     "129 is the size measured within 1/1023 of OpenColorIO's processor for the ACES display transforms on the test chart (ADR-22)"},
+        "output_tags": {"type": _STR, "required": False, "enum": list(RETAG_TARGETS), "default": None, "description": "colour tags the output must carry; "
+                        "derived from a known destination (Rec.1886 Rec.709 -> bt709, Rec.2100-PQ -> bt2020-pq, Rec.2100-HLG -> bt2020-hlg), "
+                        "required for any other destination"},
         **_ENCODE_PARAMS, **_AUDIO_STREAM_PARAM}},
 }
 
@@ -268,6 +288,8 @@ def validate_parameters(op_type: str, params: Any, where: str) -> Dict[str, Any]
             out[name] = _number(v, w, ps.get("min"), ps.get("max"))
         elif t == _INT:
             out[name] = int(_number(v, w, ps.get("min"), ps.get("max"), integer=True))
+            if "enum" in ps and out[name] not in ps["enum"]:
+                raise ColorError("INVALID_REQUEST", f"{w}={out[name]} is not supported; supported: {ps['enum']}", {"field": w, "allowed": list(ps["enum"])})
         elif t == _STR:
             if not isinstance(v, str) or not v or len(v) > 4096 or any(ord(c) < 32 for c in v):
                 raise ColorError("INVALID_REQUEST", f"{w} must be a short printable string", {"field": w})
@@ -280,7 +302,34 @@ def validate_parameters(op_type: str, params: Any, where: str) -> Dict[str, Any]
             out[name] = v
     if op_type == "PRIMARY_CORRECTION":
         _validate_levels_ordering(out, where)
+    if op_type == "OCIO_TRANSFORM":
+        _validate_ocio(out, where)
     return out
+
+
+def _validate_ocio(params: Dict[str, Any], where: str) -> None:
+    """OCIO_TRANSFORM's cross-field rules (ADR-22): one destination (a colour space, or a display with a view); a
+    config that is a built-in URI or a .ocio path; and output colour tags that are known, never guessed. The names
+    themselves are checked against the config when it is loaded (executor), not here: validation needs no OCIO."""
+    has_space, has_display, has_view = (params[k] is not None for k in ("destination_space", "display", "view"))
+    if has_space == has_display:
+        raise ColorError("INVALID_REQUEST", f"{where}: give exactly one destination, destination_space or display + view", {"field": f"{where}.destination_space"})
+    if has_display != has_view:
+        raise ColorError("INVALID_REQUEST", f"{where}: display and view go together", {"field": f"{where}.{'view' if has_display else 'display'}"})
+    cfg = params["config"]
+    if not cfg.startswith(BUILTIN_PREFIX) and not cfg.lower().endswith(CONFIG_EXTENSIONS):
+        raise ColorError("INVALID_REQUEST", f"{where}.config must be an {BUILTIN_PREFIX} built-in config or a path ending in {CONFIG_EXTENSIONS}",
+                         {"field": f"{where}.config"})
+    dest = params["display"] if has_display else params["destination_space"]
+    known = KNOWN_DESTINATION_TAGS.get(dest)
+    if params["output_tags"] is None:
+        if known is None:
+            raise ColorError("INVALID_REQUEST", f"{where}: the colour tags of destination {dest!r} are not known to this skill; name them with output_tags "
+                             f"(one of {list(RETAG_TARGETS)})", {"field": f"{where}.output_tags", "destination": dest, "allowed": list(RETAG_TARGETS)})
+        params["output_tags"] = known
+    elif known is not None and params["output_tags"] != known:
+        raise ColorError("INVALID_REQUEST", f"{where}.output_tags {params['output_tags']!r} contradicts destination {dest!r}, which is {known!r}",
+                         {"field": f"{where}.output_tags", "destination": dest, "expected": known})
 
 
 def _validate_levels_ordering(params: Dict[str, Any], where: str) -> None:
