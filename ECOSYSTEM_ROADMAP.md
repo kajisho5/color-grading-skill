@@ -46,6 +46,7 @@ Agent wires 5 color_* skills through color-grading/run, every PRIMARY_CORRECTION
 - [ ] **8. Alpha-aware grading** — LUT_APPLY / PRIMARY_CORRECTION on a source with alpha keep the alpha unchanged, and a premultiplied source is un-premultiplied before the correction and premultiplied again after
   - なぜ要るか：テロップや CG の色を変えても、縁が黒ずんだり白く浮いたりしない
   - Done when: a premultiplied fixture's alpha is bit-identical after a LUT, and edge pixels have no dark fringe
+  - Not met (ADR-25), left unchecked: ffmpeg-skill/color writes no alpha in any re-encoding mode (measured: `--lut` on ProRes 4444 `yuva444p12le` → H.264 `yuv420p`, reported `verified`), and splitting / un-premultiplying here would mean this skill's own filter graphs. Done instead: an alpha source is refused for every re-encoding operation (`alpha_not_preserved`) rather than silently flattened, stream copies keep the alpha (RETAG measured), and an output that lost it fails validation (`alpha_lost`). Needs an alpha-preserving `color.py` path (proposal in ADR-25)
 
 ---
 Engine for every media operation: [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) (3.x, 42 tools, contract_version 2.0; treated as complete, proposals go to Velisa's ROADMAP). Orchestrator: [video-production-agent](https://github.com/kajisho5/video-production-agent).

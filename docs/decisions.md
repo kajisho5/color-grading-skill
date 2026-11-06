@@ -383,6 +383,34 @@
     optional legal-range clamp after the 4:2:0 conversion of `--lut` / `--correct`. With the first, LEGALIZE can
     report both shares and step 7 can be ticked.
   - *Contract.* New operation and Capability id `color.legalize` (EXPERIMENTAL). Additive.
+- **ADR-25 Alpha: refused where it would be lost; alpha-aware grading is not possible through ffmpeg-skill/color
+  today.** ECOSYSTEM_ROADMAP.md step 8, left unchecked.
+  - *What was measured.* ffmpeg-skill/color `--lut` (main, 3.2.0) on a ProRes 4444 source with alpha
+    (`yuva444p12le`) completes with `"verified": true` and writes H.264 `yuv420p`: the alpha plane is gone and
+    nothing says so. Every re-encoding mode (`--to-sdr`, `--lut`, `--correct`) goes through `x264_args`, and the only
+    other codec its `--codec` offers there is ProRes 422 HQ, also without alpha. This skill's own validation did not
+    notice either (LUT_APPLY checks `pix_fmt == yuv420p`).
+  - *Decision.* A source whose pixel format carries alpha (`yuva*`, `gbrap*`, `ya8`/`ya16`, `rgba`/`bgra`/`argb`/
+    `abgr` and their 64-bit forms; `executor.has_alpha`) is refused at planning, also under `plan`, for every
+    operation that re-encodes through color (`REENCODING_OPERATIONS`: HDR_TO_SDR, LUT_APPLY, PRIMARY_CORRECTION,
+    OCIO_TRANSFORM, MATCH_CAMERA, LEGALIZE): `UNSUPPORTED_FORMAT`, `reason: alpha_not_preserved`, naming the ops.
+    RETAG and STRIP_DOVI are stream copies and keep it (measured: RETAG on the ProRes 4444 fixture keeps
+    `yuva444p10le`); any output of an alpha source that has lost the alpha fails validation (`alpha_lost`), the same
+    rule as the existing subtitle-stream check. This is a behaviour change for an alpha source: such a run used to
+    complete with a flattened H.264 file and now refuses; a caller that wants the fill without alpha says so by
+    exporting it first (ffmpeg-skill/export).
+  - *Why the Done when is not met.* "A premultiplied fixture's alpha is bit-identical after a LUT, and edge pixels
+    have no dark fringe" needs a colour path that carries alpha: split the alpha, grade the colour (un-premultiplied
+    first when the source is premultiplied), re-premultiply, and write a codec with alpha. Doing that here would mean
+    writing ffmpeg filter graphs of this skill's own (alphaextract / unpremultiply / alphamerge / premultiply),
+    which crosses the ffmpeg-skill boundary (docs/architecture.md). ffmpeg-skill/export already writes alpha
+    masters (prores4444, qtrle, vp9-alpha, hap-alpha, `--alpha-mode straight|premultiplied`) but grades nothing.
+  - *Proposal for ffmpeg-skill* (not changed here; for Velisa's ROADMAP): an alpha-preserving `color.py` path:
+    `--codec prores4444` (or `--keep-alpha`) for `--lut` / `--correct`, grading the colour planes only, with
+    `--alpha-mode straight|premultiplied` un-premultiplying before and premultiplying after, and an `alpha`
+    verification step like export's (alpha compared frame by frame). With it, this skill would add the flag to
+    REQUIRED/optional flags, lift the refusal for those operations, and test the bit-identical alpha and the
+    fringe-free edge.
 - **ADR-26 Contract compatibility with a pinned consumer: the pinned blocks stay byte-identical; parameters keep the
   four scalar types.** video-production-agent pins this contract (its `contract_0.4.0.json`) and, per its ADR-045,
   treats a change in `schema`, `skill_id`, `kind`, `request`, `response`, `provenance`, `execution`,

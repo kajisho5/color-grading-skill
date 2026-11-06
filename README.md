@@ -187,6 +187,7 @@ source — plus the operation's own measurable effect:
 | `OCIO_TRANSFORM` | `pix_fmt == yuv420p` and the destination's exact colour-tag triple; the baked LUT's error against OpenColorIO's own processor on a test chart is recorded in provenance (`accuracy`) |
 | `MATCH_CAMERA` | `pix_fmt == yuv420p`; `measurements.delta_e2000` before / fit / after (after measured on a frame of the written file), reported, not judged |
 | `LEGALIZE` | `pix_fmt == yuv420p`; the range itself is verified by the test suite, not per run (`legalize.out_of_range_share.measured: false`) |
+| *alpha sources* | a source with an alpha plane is refused for every re-encoding operation (ffmpeg-skill/color writes no alpha); a stream copy must keep it (`alpha_lost` otherwise), [ADR-25](docs/decisions.md) |
 | `PRIMARY_CORRECTION` | no fixed target state (a continuous correction, not a discrete tag); the generic checks above plus ffmpeg-skill's own before/after `measurements` (real signalstats numbers — luminance and saturation averages — never a subjective judgement) |
 
 This caught a real ffmpeg-skill/FFmpeg limitation during development: a stream-copy retag can exit `0` without
