@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import REQUEST_SCHEMA_VERSION, SKILL_ID
 from .errors import ColorError
+from .match import MODELS as MATCH_MODELS
 from .ocio import BUILTIN_PREFIX, CONFIG_EXTENSIONS, DEFAULT_CONFIG, DEFAULT_LUT_SIZE, KNOWN_DESTINATION_TAGS, LUT_SIZES
 
 REQUEST_SCHEMA_ID = f"{SKILL_ID}/request@{REQUEST_SCHEMA_VERSION}"
@@ -75,7 +76,8 @@ CUBE_EXTENSIONS = (".cube",)        # the only LUT format ffmpeg-skill/color acc
 MAX_OPERATIONS = 200
 
 # ---- parameter schemas: name -> {type, required, min, max, enum, default, description}
-_NUM, _INT, _BOOL, _STR = "number", "integer", "boolean", "string"
+_NUM, _INT, _BOOL, _STR, _PATCHES = "number", "integer", "boolean", "string", "patches"
+MAX_PATCHES = 64
 
 # common encode parameters accepted by every re-encoding mode of ffmpeg-skill/color (--crf / --preset); RETAG and
 # STRIP_DOVI do not take them: RETAG is a stream copy that only re-encodes on an automatic ffmpeg-skill fallback
@@ -148,6 +150,19 @@ OPERATION_TYPES: Dict[str, Dict[str, Any]] = {
         "output_tags": {"type": _STR, "required": False, "enum": list(RETAG_TARGETS), "default": None, "description": "colour tags the output must carry; "
                         "derived from a known destination (Rec.1886 Rec.709 -> bt709, Rec.2100-PQ -> bt2020-pq, Rec.2100-HLG -> bt2020-hlg), "
                         "required for any other destination"},
+        **_ENCODE_PARAMS, **_AUDIO_STREAM_PARAM}},
+    "MATCH_CAMERA": {"description": "Match this camera's colour to a reference camera from a frame pair of the same subject: frames extracted by "
+                     "ffmpeg-skill/look, a correction fitted (per-channel curves or a 3x3 matrix + offset), written as a 3D .cube LUT and "
+                     "applied by ffmpeg-skill/color --lut; the residual CIEDE2000 against the reference is measured before and after "
+                     "(docs/decisions.md ADR-23)", "parameters": {
+        "reference_path": {"type": _STR, "required": True, "description": "the reference camera's video (camera A), resolved through the input PathPolicy"},
+        "reference_at": {"type": _NUM, "required": False, "min": 0.0, "max": 86400.0, "default": 0.0, "description": "time of the reference frame in the reference video, seconds"},
+        "at": {"type": _NUM, "required": False, "min": 0.0, "max": 86400.0, "default": 0.0, "description": "time of the matching frame in this operation's input, seconds"},
+        "model": {"type": _STR, "required": False, "enum": list(MATCH_MODELS), "default": "curves", "description": "curves: one monotone curve per channel; "
+                  "matrix: 3x3 matrix + offset (corrects cross-channel differences too)"},
+        "patches": {"type": _PATCHES, "required": False, "default": None, "description": f"up to {MAX_PATCHES} stated patches, each "
+                    "{reference: [x, y, w, h], input: [x, y, w, h]} in fractions of the frame; omitted: the whole frame, which needs the same framing"},
+        "lut_size": {"type": _INT, "required": False, "enum": [17, 33, 65], "default": 33, "description": "edge length of the written 3D LUT"},
         **_ENCODE_PARAMS, **_AUDIO_STREAM_PARAM}},
 }
 
@@ -300,10 +315,31 @@ def validate_parameters(op_type: str, params: Any, where: str) -> Dict[str, Any]
             if not isinstance(v, bool):
                 raise ColorError("INVALID_REQUEST", f"{w} must be a boolean", {"field": w})
             out[name] = v
+        elif t == _PATCHES:
+            out[name] = _patches(v, w)
     if op_type == "PRIMARY_CORRECTION":
         _validate_levels_ordering(out, where)
     if op_type == "OCIO_TRANSFORM":
         _validate_ocio(out, where)
+    return out
+
+
+def _rect(value: Any, where: str) -> List[float]:
+    if not isinstance(value, list) or len(value) != 4:
+        raise ColorError("INVALID_REQUEST", f"{where} must be [x, y, w, h]", {"field": where})
+    x, y, w, h = (_number(v, f"{where}[{i}]", 0.0, 1.0) for i, v in enumerate(value))
+    if w <= 0 or h <= 0 or x + w > 1.0 + 1e-9 or y + h > 1.0 + 1e-9:
+        raise ColorError("INVALID_REQUEST", f"{where}: a non-empty rectangle inside the frame (fractions 0..1)", {"field": where})
+    return [x, y, w, h]
+
+
+def _patches(value: Any, where: str) -> List[Dict[str, List[float]]]:
+    if not isinstance(value, list) or not value or len(value) > MAX_PATCHES:
+        raise ColorError("INVALID_REQUEST", f"{where} must be a non-empty array of at most {MAX_PATCHES} patches", {"field": where})
+    out = []
+    for i, p in enumerate(value):
+        d = _obj(p, f"{where}[{i}]", ("reference", "input"), ("reference", "input"))
+        out.append({"reference": _rect(d["reference"], f"{where}[{i}].reference"), "input": _rect(d["input"], f"{where}[{i}].input")})
     return out
 
 

@@ -35,7 +35,10 @@ from .errors import ColorError
 KNOWN_CONTRACT_VERSIONS = ("1.0", "2.0")
 KNOWN_CONTRACT_VERSION = KNOWN_CONTRACT_VERSIONS[0]   # the oldest; the registry range starts here
 ENV_DIR_KEYS = ("COLOR_GRADING_FFMPEG_SKILL_DIR", "VIDEO_AGENT_FFMPEG_SKILL_DIR")
-TOOLS_USED = ("probe", "color")
+REQUIRED_TOOLS = ("probe", "color")
+# optional: a checkout without it (or without these flags) only loses the operations that need it (MATCH_CAMERA, ADR-23)
+OPTIONAL_TOOL_FLAGS: Dict[str, Tuple[str, ...]] = {"look": ("input", "output", "at", "width", "no_timecode", "json")}
+TOOLS_USED = REQUIRED_TOOLS + tuple(OPTIONAL_TOOL_FLAGS)
 # argparse dests of the ffmpeg-skill tools this adapter emits on every call of some operation type; every one must be
 # present in the located checkout (detected, never inferred from a version number). Together they imply ffmpeg-skill
 # >= 0.12.3 (--gamma/--lift/--gain/--levels-*/--curves first exist there), which is also the first release where
@@ -52,8 +55,23 @@ REQUIRED_FLAGS: Dict[str, Tuple[str, ...]] = {
 FLAG_ALTERNATIVES: Dict[str, Dict[str, Tuple[str, ...]]] = {"color": {"encoder_quality": ("quality", "crf")}}
 # every flag this adapter may emit, for the contract document (`ffmpeg_skill.flags_used`)
 FLAGS_USED: Dict[str, Tuple[str, ...]] = {
-    tool: flags + tuple(f for alts in FLAG_ALTERNATIVES.get(tool, {}).values() for f in alts) for tool, flags in REQUIRED_FLAGS.items()
+    **{tool: flags + tuple(f for alts in FLAG_ALTERNATIVES.get(tool, {}).values() for f in alts) for tool, flags in REQUIRED_FLAGS.items()},
+    **OPTIONAL_TOOL_FLAGS,
 }
+# ffmpeg-skill release whose --lut converts to RGB and back with one matrix (its #410; before it, BT.709 in and BT.601
+# out). A behaviour fix with no flag to detect, so it is read from the version: reported by doctor for every LUT
+# operation, and required by MATCH_CAMERA, whose fit is only valid when --lut sees the RGB look's frames show (ADR-23)
+LUT_LEGS_FIXED_IN = (3, 1, 6)
+
+
+def version_tuple(version: str) -> Optional[Tuple[int, ...]]:
+    parts = str(version).split(".")[:3]
+    try:
+        return tuple(int(p) for p in parts) if len(parts) == 3 else None
+    except ValueError:
+        return None
+
+
 _ENV_KEEP = ("PATH", "HOME", "TMPDIR", "TEMP", "TMP", "LANG", "LC_ALL", "TERM",
              "SYSTEMROOT", "SYSTEMDRIVE", "PATHEXT", "COMSPEC", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA")
 _HELP_FLAG_RE = re.compile(r"(?<![\w-])--([a-z][a-z0-9-]*)")
@@ -221,6 +239,12 @@ def check_tools(tools: Dict[str, Dict[str, Any]]) -> Tuple[List[str], Dict[str, 
                                                     if isinstance(caps, list) else None)
             if "video_required" in spec and spec.get("video_required") is not True:
                 problems.append("ffmpeg-skill/color does not declare video_required")
+    for tool, flags in OPTIONAL_TOOL_FLAGS.items():
+        props = ((tools.get(tool) or {}).get("input_schema") or {}).get("properties") or {}
+        missing = [f for f in flags if f not in props]
+        features[f"{tool}_tool"] = tool in tools and not missing
+        if tool in tools and missing:
+            features[f"{tool}_missing_flags"] = missing
     return problems, features
 
 
@@ -264,7 +288,7 @@ class FfmpegSkill:
         tried = []
         for c in cls.candidates(explicit):
             tried.append(str(c))
-            if all((c / "scripts" / f"{t}.py").is_file() for t in TOOLS_USED):
+            if all((c / "scripts" / f"{t}.py").is_file() for t in REQUIRED_TOOLS):
                 return cls(c.resolve(), timeout)
         raise ColorError("TOOL_ERROR", "ffmpeg-skill not found (need scripts/{probe,color}.py)",
                          {"reason": "ffmpeg_skill_missing", "tried": tried}, retryable=False)
@@ -327,6 +351,8 @@ class FfmpegSkill:
         else:
             tool_problems, features = check_tools(tools)
             problems += tool_problems
+        vt = version_tuple(version)
+        features["lut_legs_bt709"] = None if vt is None else vt >= LUT_LEGS_FIXED_IN
         features.update({"source": source, "common_layout": _common_layout(self.directory),
                          "removed": [r.get("what") for r in (doc or {}).get("removed") or [] if isinstance(r, dict)]})
         self._info = SkillInfo(self.directory, version, contract_version, tools, problems, features)
@@ -394,6 +420,17 @@ class FfmpegSkill:
         return run
 
     # ---- typed helpers
+    def look_frame(self, video: str, at: float, out_base: Path, width: int, timeout: Optional[float] = None) -> Path:
+        """One frame of `video` at `at` seconds as a PNG (ffmpeg-skill/look --at, no timecode burned in), `width` px wide."""
+        out_base.parent.mkdir(parents=True, exist_ok=True)
+        run = self.run_tool("look", [video, "--at", f"{at:.3f}", "--width", str(int(width)), "--no-timecode", "-o", str(out_base)], timeout)
+        outs = run.data.get("outputs") if isinstance(run.data.get("outputs"), list) else [run.data.get("output")]
+        paths = [Path(p) for p in outs if isinstance(p, str) and p.lower().endswith(".png")]
+        if len(paths) != 1 or not paths[0].is_file():
+            raise ColorError("TOOL_ERROR", f"ffmpeg-skill/look reported no frame PNG for {os.path.basename(video)} at {at:.3f}s",
+                             {"reason": "no_frame", "outputs": outs})
+        return paths[0]
+
     def probe(self, path: str, timeout: Optional[float] = None) -> Dict[str, Any]:
         """ffmpeg-skill/probe prints its document directly (no status envelope)."""
         argv = [sys.executable, self.script("probe"), path]

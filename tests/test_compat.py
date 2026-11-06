@@ -199,8 +199,13 @@ def test_checkout_without_a_contract_is_read_through_help(tmp_path):
     d = doctor_report(str(root))
     assert d["checks"]["ffmpeg_skill"]["status"] == "ok"
     assert d["checks"]["capabilities"]["ffmpeg"] == "unknown"
-    assert all(o["status"] == "unknown" for o in d["checks"]["operations"].values())
-    assert d["status"] == "ok"
+    ops = d["checks"]["operations"]
+    assert all(o["status"] == "unknown" for t, o in ops.items() if t != "MATCH_CAMERA")
+    # MATCH_CAMERA is the one operation this fake checkout really cannot serve: it has no look.py, and 0.13.0 predates
+    # the --lut fix MATCH_CAMERA needs (ADR-23); doctor says so (degraded, not fail) instead of reporting it unknown
+    assert ops["MATCH_CAMERA"]["status"] == "unsupported"
+    assert ops["MATCH_CAMERA"]["missing"] == ["ffmpeg-skill/look", "ffmpeg-skill/color:lut-bt709-legs"]
+    assert d["status"] == "degraded" and d["unavailable_operations"] == ["MATCH_CAMERA"]
 
 
 def test_doctor_reports_what_was_detected(tmp_path):

@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-v0.4.0, Python. HDR_TO_SDR, LUT_APPLY, RETAG, STRIP_DOVI, PRIMARY_CORRECTION (exposure ... curves), OCIO_TRANSFORM (step 5). 170 tests, CI on 3 OSes, release workflow.
+v0.4.0, Python. HDR_TO_SDR, LUT_APPLY, RETAG, STRIP_DOVI, PRIMARY_CORRECTION (exposure ... curves), OCIO_TRANSFORM (step 5), MATCH_CAMERA (step 6). 170 tests, CI on 3 OSes, release workflow.
 
 ## What this repository owns
 
@@ -35,9 +35,10 @@ Agent wires 5 color_* skills through color-grading/run, every PRIMARY_CORRECTION
 - [x] **5. OCIO / ACES transforms** — new op `OCIO_TRANSFORM`: a colour-space conversion named by an OpenColorIO config (the ACES studio / CG configs, or the user's own `.ocio`), for example camera log → ACEScct → Rec.709 or Rec.2100 PQ, with an optional look and display / view. PyOpenColorIO (BSD-3-Clause, optional extra `ocio`) only bakes the transform to a 3D LUT of a stated size; the LUT is applied through ffmpeg-skill as LUT_APPLY already does, so the engine stays the only thing touching media. Provenance records the config's name, version and hash, the source / destination spaces and the LUT size. The ACES configs' own licence is checked in the ADR
   - Done when: ADR; a baked LUT matches OCIO's own CPU processor within 1/1023 on a test chart; the doctor reports `ocio` missing without breaking the other ops; the output's colour tags match the destination space
   - Done (ADR-22): `OCIO_TRANSFORM` bakes with PyOpenColorIO (extra `ocio`) and applies through ffmpeg-skill `--lut` (+ `--retag` for PQ / HLG); the 129³ LUT read back from its `.cube` is within 1/1023 of OCIO's CPU processor on the ColorChecker + grey-ramp chart (S-Log3 → Rec.709 SDR, LogC4 → Rec.2100 PQ), every bake records its own measured error (65³, the default, measures up to about 2.7/1023 on that chart); doctor without PyOpenColorIO: `ocio` missing, only `OCIO_TRANSFORM` unavailable; output tags measured equal to the destination's. Limits: needs an ffmpeg-skill whose `--retag` declares `bsf:h264_metadata` (1.x on); on 0.12.3 it is unsupported in doctor and refused before encoding, since that version cannot guarantee any destination's tags; ffmpeg-skill before 3.1.6 shifts every LUT's colours (its #410, doctor warns)
-- [ ] **6. Match cameras to a reference** — MATCH_CAMERA: from a frame pair of the same subject (camera B against camera A), fit a correction (per-channel curves, or a small 3D LUT) and write it as a LUT per camera; the residual colour difference (ΔE2000 on stated patches or the whole frame) is reported. Field review 2026-11-05 (Velisa ROADMAP, third round)
+- [x] **6. Match cameras to a reference** — MATCH_CAMERA: from a frame pair of the same subject (camera B against camera A), fit a correction (per-channel curves, or a small 3D LUT) and write it as a LUT per camera; the residual colour difference (ΔE2000 on stated patches or the whole frame) is reported. Field review 2026-11-05 (Velisa ROADMAP, third round)
   - なぜ要るか：会場の複数カメラの色の違いを、マルチカムの切り替えで目立たなくできる
   - Done when: a fixture whose camera B is camera A with a known tint and gain matches within ΔE 2 on average
+  - Done (ADR-23): `MATCH_CAMERA` (frames by ffmpeg-skill/look, curves or 3×3 matrix fit, LUT applied by `--lut`); on the fixture (B = A with R ×0.86, G ×0.97 + 10, B ×0.90 + 6) ΔE2000 mean 5.19 → 0.50 measured on the written file (whole frame, curves; 9 patches with the matrix 4.81 → 0.25). Needs ffmpeg-skill ≥ 3.1.6 (its `--lut` matrix fix): on older checkouts it is unsupported in doctor and refused
 - [ ] **7. Broadcast legal range and gamut** — LEGALIZE: soft-clip to BT.709 legal levels (8-bit 16-235 / 10-bit 64-940, chroma limits) and report the share of pixels out of range before and after; the limits follow EBU R103 when that profile is asked for
   - なぜ要るか：放送局への納品で、レベル外の信号で差し戻されない
   - Done when: a fixture with super-whites ends within range and the report gives both shares

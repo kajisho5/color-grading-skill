@@ -18,6 +18,10 @@ ffmpeg directly; the skill under test never does. Every fixture has a known cons
   multi_audio.mp4  same video as sdr.mp4 (2 s) with two distinguishable audio streams instead of one: stream 0 is
                 mono, stream 1 is stereo (different `channels`, deterministically verifiable via ffprobe) -- for
                 exercising `--audio-stream N` selection
+  camera_a.mp4  2 s 320x180 H.264 testsrc2 (a varied, saturated picture), converted to YUV with the BT.709 matrix
+                (the matrix ffmpeg-skill/look and --lut read it back with): the reference camera of MATCH_CAMERA
+  camera_b.mp4  the same frames as camera_a with a known per-channel gain and tint in RGB code values before the same
+                conversion: R x0.86, G x0.97 + 10, B x0.90 + 6 (CAMERA_B_GAIN / CAMERA_B_OFFSET), i.e. camera B
   audio.wav     2 s mono PCM tone, no video stream (audio-only)
   text.txt      not media
   invert.cube   a 3D LUT (size 2) that exactly inverts every channel (output = 1 - input); trilinear/tetrahedral
@@ -40,6 +44,10 @@ from typing import Dict
 FF = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-nostdin"]
 TONE = "0.1*sin(2*PI*1000*t)"
 SOLID = "color=c=0x8040c0:s=160x90:rate=25"
+
+CAMERA_B_GAIN = (0.86, 0.97, 0.90)
+CAMERA_B_OFFSET = (0.0, 10.0, 6.0)          # 8-bit code values
+_TO_709 = "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p"
 
 INVERT_CUBE = """TITLE "invert"
 LUT_3D_SIZE 2
@@ -75,7 +83,7 @@ def build_all(directory: Path) -> Dict[str, Path]:
     d.mkdir(parents=True, exist_ok=True)
     f = {k: d / v for k, v in {"sdr": "sdr.mp4", "sdr_noaudio": "sdr_noaudio.mp4", "hevc_sdr": "hevc_sdr.mp4", "hdr": "hdr.mp4",
                                "sdr_with_subs": "sdr_with_subs.mp4", "multi_audio": "multi_audio.mp4",
-                               "audio": "audio.wav", "text": "text.txt", "invert_cube": "invert.cube"}.items()}
+                               "camera_a": "camera_a.mp4", "camera_b": "camera_b.mp4", "audio": "audio.wav", "text": "text.txt", "invert_cube": "invert.cube"}.items()}
     _run(["-f", "lavfi", "-i", SOLID, "-f", "lavfi", "-i", f"aevalsrc='{TONE}':s=48000", "-t", "3",
           "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(f["sdr"])])
     _run(["-f", "lavfi", "-i", SOLID, "-t", "2", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(f["sdr_noaudio"])])
@@ -96,6 +104,10 @@ def build_all(directory: Path) -> Dict[str, Path]:
     _run(["-i", str(hdr_base), "-c", "copy", "-bsf:v", "hevc_metadata=colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9:video_full_range_flag=0",
           "-tag:v", "hvc1", "-movflags", "+faststart", str(f["hdr"])])
     hdr_base.unlink()
+    lut = ":".join(f"{c}='clip(val*{g}+{o},0,255)'" for c, g, o in zip("rgb", CAMERA_B_GAIN, CAMERA_B_OFFSET))
+    for key, chain in (("camera_a", f"format=rgb24,{_TO_709}"), ("camera_b", f"format=rgb24,lutrgb={lut},{_TO_709}")):
+        _run(["-f", "lavfi", "-i", "testsrc2=s=320x180:rate=25", "-t", "2", "-vf", chain, "-c:v", "libx264", "-preset", "veryfast", "-crf", "12",
+              str(f[key])])
     _run(["-f", "lavfi", "-i", f"aevalsrc='{TONE}':s=48000:c=mono", "-t", "2", "-c:a", "pcm_s16le", str(f["audio"])])
     f["text"].write_text("not media\n", encoding="utf-8")
     f["invert_cube"].write_text(INVERT_CUBE, encoding="utf-8")

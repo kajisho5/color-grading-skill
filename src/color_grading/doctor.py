@@ -9,7 +9,8 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from . import DOCTOR_SCHEMA_VERSION, SKILL_ID, VERSION
-from .adapter import FfmpegSkill
+from .adapter import LUT_LEGS_FIXED_IN, FfmpegSkill
+from .adapter import version_tuple as _version_tuple
 from .errors import ColorError
 from . import ocio as ocio_mod
 from .executor import CHECKOUT_CAPABILITIES, PYTHON_CAPABILITIES, TOOL_FOR
@@ -19,19 +20,6 @@ from .security import PathPolicy
 DOCTOR_SCHEMA_ID = f"{SKILL_ID}/doctor@{DOCTOR_SCHEMA_VERSION}"
 # capabilities used across the implemented operations, beyond the base ffmpeg/ffprobe pair
 ALL_CAPABILITIES = sorted({c for _, extra in TOOL_FOR.values() for c in extra if c not in PYTHON_CAPABILITIES and c not in CHECKOUT_CAPABILITIES})
-
-
-# ffmpeg-skill release whose --lut converts to RGB and back with one matrix (its #410). Reported as a warning, never
-# gated on: it is a behaviour fix with no flag to detect (ADR-19 gates only on flags; ADR-22)
-LUT_LEGS_FIXED_IN = (3, 1, 6)
-
-
-def _version_tuple(version: str) -> Optional[tuple]:
-    parts = str(version).split(".")[:3]
-    try:
-        return tuple(int(p) for p in parts) if len(parts) == 3 else None
-    except ValueError:
-        return None
 
 
 def python_capabilities() -> Dict[str, str]:

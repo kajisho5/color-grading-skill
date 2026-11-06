@@ -58,7 +58,7 @@ and reports what it observed.
 
 | | |
 |---|---|
-| **Does** | execute `HDR_TO_SDR`, `LUT_APPLY`, `RETAG`, `STRIP_DOVI`, `PRIMARY_CORRECTION`, `OCIO_TRANSFORM` as a dependency graph; validate every artifact by re-probing it (measured colour tags, never assumed); reuse intermediates by content-addressed identity; record full provenance |
+| **Does** | execute `HDR_TO_SDR`, `LUT_APPLY`, `RETAG`, `STRIP_DOVI`, `PRIMARY_CORRECTION`, `OCIO_TRANSFORM`, `MATCH_CAMERA` as a dependency graph; validate every artifact by re-probing it (measured colour tags, never assumed); reuse intermediates by content-addressed identity; record full provenance |
 | **Does not** | decide *which* colour treatment, LUT, tonemap curve or correction values to apply; look at a frame and judge it "cinematic"; pick white-balance values (`WHITE_BALANCE` is an alias of `PRIMARY_CORRECTION`'s explicit `temperature`/`tint`); convert containers; run `ffmpeg` directly; accept a command, argv or filter string from the caller |
 
 That split is the whole design: **[video-production-agent](https://github.com/kajisho5/video-production-agent)**
@@ -145,6 +145,7 @@ Nothing in this pipeline reasons about the image. Every box is a typed, mechanic
 | `STRIP_DOVI` | Remove a Dolby Vision RPU (HEVC only) |
 | `PRIMARY_CORRECTION` | Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint), gamma, three-way shadows/highlights (lift/gain), levels and a curves preset — each an explicit, independently optional, range-checked parameter |
 | `OCIO_TRANSFORM` | OpenColorIO / ACES colour-space conversion (built-in ACES studio / CG configs or a `.ocio` file): source space → destination space, or → display / view, with an optional look. Baked to a 3D LUT by the optional PyOpenColorIO (`pip install 'color-grading-skill[ocio]'`), applied by ffmpeg-skill `--lut`, tagged by `--retag` ([ADR-22](docs/decisions.md)) |
+| `MATCH_CAMERA` | Match this camera to a reference camera from a frame pair the caller names (whole frame or stated patches): per-channel curves or a 3×3 matrix fitted, written as a LUT and applied by ffmpeg-skill `--lut`; residual CIEDE2000 measured before and on the written file ([ADR-23](docs/decisions.md)) |
 | `WHITE_BALANCE` *(alias)* | `PRIMARY_CORRECTION` restricted to `temperature` + `tint` (plus `crf`/`preset`/`audio_stream`); resolved to `PRIMARY_CORRECTION` at validation, so plan, identity and provenance name `PRIMARY_CORRECTION` ([ADR-20](docs/decisions.md)) |
 
 Each maps 1:1 onto one mode of `ffmpeg-skill/color`; every operation takes exactly one input and none of them
@@ -183,6 +184,7 @@ source — plus the operation's own measurable effect:
 | `RETAG` | the exact `(color_space, color_primaries, color_transfer)` triple requested |
 | `STRIP_DOVI` | no Dolby Vision side data present |
 | `OCIO_TRANSFORM` | `pix_fmt == yuv420p` and the destination's exact colour-tag triple; the baked LUT's error against OpenColorIO's own processor on a test chart is recorded in provenance (`accuracy`) |
+| `MATCH_CAMERA` | `pix_fmt == yuv420p`; `measurements.delta_e2000` before / fit / after (after measured on a frame of the written file), reported, not judged |
 | `PRIMARY_CORRECTION` | no fixed target state (a continuous correction, not a discrete tag); the generic checks above plus ffmpeg-skill's own before/after `measurements` (real signalstats numbers — luminance and saturation averages — never a subjective judgement) |
 
 This caught a real ffmpeg-skill/FFmpeg limitation during development: a stream-copy retag can exit `0` without

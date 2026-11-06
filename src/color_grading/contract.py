@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from . import CONTRACT_SCHEMA_VERSION, DOCTOR_SCHEMA_VERSION, PACKAGE_NAME, REQUEST_SCHEMA_VERSION, RESPONSE_SCHEMA_VERSION, SKILL_ID, VERSION
-from .adapter import FLAG_ALTERNATIVES, FLAGS_USED, KNOWN_CONTRACT_VERSION, KNOWN_CONTRACT_VERSIONS, REQUIRED_FLAGS, TOOLS_USED
+from .adapter import FLAG_ALTERNATIVES, FLAGS_USED, KNOWN_CONTRACT_VERSION, KNOWN_CONTRACT_VERSIONS, OPTIONAL_TOOL_FLAGS, REQUIRED_FLAGS, REQUIRED_TOOLS, TOOLS_USED
 from .errors import ERROR_CODES, ERROR_TABLE, EXIT_CODES
 from . import ocio as ocio_mod
 from .executor import DURATION_TOLERANCE, TOOL_FOR, WORK_DIR_NAME
@@ -29,6 +29,7 @@ CONTRACT_SCHEMA_ID = f"{SKILL_ID}/contract@{CONTRACT_SCHEMA_VERSION}"
 CAPABILITY_IDS: Dict[str, str] = {
     "HDR_TO_SDR": "color.hdr_to_sdr", "LUT_APPLY": "color.lut_apply", "RETAG": "color.retag", "STRIP_DOVI": "color.strip_dovi",
     "PRIMARY_CORRECTION": "color.primary_correction", "OCIO_TRANSFORM": "color.ocio_transform",
+    "MATCH_CAMERA": "color.match_camera",
 }
 
 
@@ -45,7 +46,7 @@ FFMPEG_SKILL_CONTRACT_RANGE = f">={KNOWN_CONTRACT_VERSION} <{int(KNOWN_CONTRACT_
 
 def dependencies() -> List[Dict[str, Any]]:
     return [{"skill_id": "ffmpeg-skill", "version_range": FFMPEG_SKILL_CONTRACT_RANGE, "range_of": "contract_version", "required": True,
-             "tools": [f"ffmpeg-skill/{t}" for t in TOOLS_USED]}]
+             "tools": [f"ffmpeg-skill/{t}" for t in REQUIRED_TOOLS], "optional_tools": [f"ffmpeg-skill/{t}" for t in OPTIONAL_TOOL_FLAGS]}]
 
 
 def optional_dependencies() -> List[Dict[str, Any]]:
@@ -95,7 +96,7 @@ def skill_contract() -> Dict[str, Any]:
                        "decides which colour treatment, LUT or look to apply, nor which correction values to use.",
         "repository": "https://github.com/kajisho5/color-grading-skill",
         "not_provided": ["AI reasoning", "decisions", "production plans", "automatic colour grading", "automatic look selection", "automatic LUT selection",
-                         "image understanding", "scene/face detection", "shot matching", "automatic white balance (WHITE_BALANCE takes explicit temperature "
+                         "image understanding", "scene/face detection", "automatic shot matching (MATCH_CAMERA fits camera B to a reference frame and time the caller names)", "automatic white balance (WHITE_BALANCE takes explicit temperature "
                          "and tint values)", "container/format conversion (ffmpeg-skill/export)", "arbitrary ffmpeg filters",
                          "shell execution", "network access"],
         "tools": tools,
@@ -127,7 +128,7 @@ def skill_contract() -> Dict[str, Any]:
                     "work_dir": f"<workspace>/{WORK_DIR_NAME}/<project_id>/"},
         "execution": {"mode": "local", "canonical_invocation": ["color-grading", "run", "-", "--json"], "stdin": REQUEST_SCHEMA_ID,
                       "stdout": f"exactly one {SKILL_ID}/response@{RESPONSE_SCHEMA_VERSION} document", "stderr": "diagnostics only",
-                      "executables": ["python3 <ffmpeg-skill>/scripts/{probe,color}.py (argv lists)"],
+                      "executables": ["python3 <ffmpeg-skill>/scripts/{probe,color,look}.py (argv lists; look only for MATCH_CAMERA)"],
                       "executable_resolution": "ffmpeg-skill directory: --ffmpeg-skill, COLOR_GRADING_FFMPEG_SKILL_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR, "
                                                "~/.claude/skills/ffmpeg-skill, ./vendor/ffmpeg-skill, ../ffmpeg-skill; ffmpeg/ffprobe: PATH lookup by ffmpeg-skill",
                       "shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False, "ai": False},
