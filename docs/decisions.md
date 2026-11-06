@@ -350,6 +350,39 @@
   - *Contract.* New operation and Capability id `color.match_camera` (EXPERIMENTAL); `dependencies[0].optional_tools`
     (`ffmpeg-skill/look`); `ffmpeg_skill.flags_used.look`; "shot matching" in `not_provided` becomes "automatic shot
     matching". Additive for a pinned consumer.
+- **ADR-24 `LEGALIZE`: a broadcast-legal soft clip as a LUT over ffmpeg-skill's float RGB; the out-of-range shares
+  are not measured, because nothing this skill may call can measure them.** ECOSYSTEM_ROADMAP.md step 7, left
+  unchecked: the clip is implemented and verified, the report of both shares is not.
+  - *Request.* `profile` `bt709` (default: RGB 0..1, i.e. 8-bit luma 16–235, chroma 16–240) or `ebu-r103` (EBU
+    R 103: RGB −5..105 %, luma −1..103 %; RGB limited to −1..103 % so luma stays inside), `knee` (0.8–0.99, default
+    0.95), `lut_size` (33 / 65) and the encode parameters. HDR input is refused (`hdr_input`).
+  - *How.* ffmpeg-skill 3.1.6 on converts the frame to float RGB (`gbrpf32le`) for `--lut`, so super-whites arrive
+    above 1 (neutral 8-bit Y′ 255 is 1.091). The LUT declares `DOMAIN_MAX 1.25` and maps each channel through a
+    tanh shoulder from the knee that approaches the profile's upper limit without reaching it; below the knee it is
+    unchanged. Measured constraints of FFmpeg's `.cube` reader and lut3d: `DOMAIN_MIN` is taken into the scale but
+    no offset is applied (a [−0.25, 1.25] domain shifted every value), and input below 0 is clamped, so sub-blacks
+    are clipped hard at RGB 0 (an illegal colour clamped in RGB can come out with higher luma: the fixture's Y′ 4
+    pixels with strong chroma leave at Y′ ≥ 33). ffmpeg-skill's way back (`scale=out_color_matrix=bt709:out_range=tv`)
+    clamps float RGB to 0..1 (neutral Y′ 250 leaves at 236 with no LUT at all), so `ebu-r103`'s headroom above
+    100 % is never written: both profiles end inside BT.709's range; they differ only in the shoulder. Before 3.1.6
+    the legs are 8-bit with mismatched matrices (ADR-23), so LEGALIZE needs `ffmpeg-skill/color:lut-bt709-legs`
+    and is unsupported (refused) on older checkouts.
+  - *Result on the fixture* (`super_white.mp4`: luma ramp 4..254, smooth chroma ±60): luma out of 16–235 on 12.2 %
+    of samples before, 0 after; chroma 0 before and after. Measured by the test itself from the written file
+    (rawvideo), every frame. A harsher picture, testsrc2 with chroma ×1.3: luma 17.6 % → 0, chroma out of 16–240
+    43.6 % → 1.26 %: on hard saturated edges the 4:2:0 downsampling in ffmpeg-skill's leg (and the encode) overshoots
+    an RGB-legal picture, which a LUT before that leg cannot prevent.
+  - *Why the shares are not reported.* The roadmap asks for the share of pixels out of range before and after.
+    That needs per-pixel Y′CbCr (or signalstats' BRNG). ffmpeg-skill exposes signalstats only as luma levels
+    (`--correct`'s and `probe --analyze`'s min / max / percentiles, no share), look returns RGB PNGs (super-whites
+    already clipped), and this skill runs no ffmpeg of its own (docs/architecture.md). Provenance says so
+    (`legalize.out_of_range_share: {measured: false, reason}`) instead of a number.
+  - *Proposal for ffmpeg-skill* (not changed here; for Velisa's ROADMAP): a legal-range measurement, e.g.
+    `probe.py --analyze` (or `color.py --lut`'s `measurements`) reporting the share of luma samples outside
+    16–235 / 64–940 and chroma outside 16–240 / 64–960 (signalstats `stat=brng` plus a plane histogram), and an
+    optional legal-range clamp after the 4:2:0 conversion of `--lut` / `--correct`. With the first, LEGALIZE can
+    report both shares and step 7 can be ticked.
+  - *Contract.* New operation and Capability id `color.legalize` (EXPERIMENTAL). Additive.
 - **ADR-26 Contract compatibility with a pinned consumer: the pinned blocks stay byte-identical; parameters keep the
   four scalar types.** video-production-agent pins this contract (its `contract_0.4.0.json`) and, per its ADR-045,
   treats a change in `schema`, `skill_id`, `kind`, `request`, `response`, `provenance`, `execution`,

@@ -26,6 +26,7 @@ from .adapter import FfmpegSkill, ToolRun, fmt_num, probe_hdr
 from .canonical import sha256_file, stable_hash
 from .errors import ColorError
 from .graph import Node, OperationGraph
+from . import legalize as legalize_mod
 from . import match as match_mod
 from . import ocio as ocio_mod
 from .model import CUBE_EXTENSIONS, MAX_LUT_BYTES, OUTPUT_FORMATS, RETAG_TAGS, ColorRequest, parse_patches, parse_request
@@ -48,6 +49,8 @@ TOOL_FOR: Dict[str, Tuple[str, List[str]]] = {
     # baked by PyOpenColorIO (a Python capability of this skill, not of ffmpeg-skill), applied by color --lut, tagged by
     # color --retag when the --lut output does not already carry the destination's tags (ADR-22)
     # frames by ffmpeg-skill/look, the fit computed here (match.py), the LUT applied by color --lut (ADR-23)
+    # baked here (legalize.py), applied by color --lut over its float RGB legs (3.1.6 on), ADR-24
+    "LEGALIZE": ("color", ["ffmpeg-skill/color:lut-bt709-legs", "filter:lut3d", "encoder:libx264"]),
     "MATCH_CAMERA": ("color", ["ffmpeg-skill/look", "ffmpeg-skill/color:lut-bt709-legs", "filter:lut3d", "encoder:libx264"]),
     "OCIO_TRANSFORM": ("color", [ocio_mod.CAPABILITY, "ffmpeg-skill/color:retag-h264-vui", "filter:lut3d", "encoder:libx264"]),
 }
@@ -109,7 +112,7 @@ class NodeState:
     dropped_non_av_streams: Optional[bool] = None  # ffmpeg-skill/color's own "did I drop subtitle/data streams" signal (>= 0.12.0)
     error: Optional[Dict[str, Any]] = None
     input_hash: Optional[str] = None
-    ocio: Optional[Any] = None                     # ocio.BakedLut (OCIO_TRANSFORM only)
+    baked: Optional[Any] = None                    # a LUT this skill computed at planning: ocio.BakedLut (kind "ocio"), legalize.LegalLut (kind "legalize")
     reference: Optional[LutInfo] = None            # MATCH_CAMERA: the reference video (path, size, sha256)
     retagged: Optional[bool] = None                # OCIO_TRANSFORM: whether a --retag pass was needed for the destination's tags
 
@@ -121,8 +124,8 @@ class NodeState:
         d["artifact"] = self.artifact.to_dict() if self.artifact else None
         if self.lut is not None:
             d["lut"] = self.lut.to_dict()
-        if self.ocio is not None:
-            d["ocio"] = self.ocio.provenance()
+        if self.baked is not None:
+            d[self.baked.kind] = self.baked.provenance()
         if self.reference is not None:
             d["reference"] = self.reference.to_dict()
         if self.retagged is not None:
@@ -247,6 +250,10 @@ class Executor:
                                  f"({op.parameters['output_tags']}) cannot be guaranteed; update ffmpeg-skill", {"op_id": op.op_id, "reason": "retag_cannot_rewrite_tags",
                                  "ffmpeg_skill": info.version}, retryable=False)
             overrides[f"op:{op.op_id}"] = {"config": b.config["sha256"], "lut_sha256": b.sha256}
+        for op in project.operations:
+            if op.type == "LEGALIZE":
+                baked[f"op:{op.op_id}"] = legalize_mod.bake(op.parameters)
+                overrides[f"op:{op.op_id}"] = {"lut_sha256": baked[f"op:{op.op_id}"].sha256}
         # MATCH_CAMERA: the reference video is an input like the source (input PathPolicy), identified by its content
         references: Dict[str, LutInfo] = {}
         for op in project.operations:
@@ -269,7 +276,7 @@ class Executor:
                 st.reference = references[n]
                 st.lut = LutInfo(work_dir / f"{st.identity[:16]}.cube", 0, "")    # written at execution, from the fitted frames
             if n in baked:
-                st.ocio = baked[n]
+                st.baked = baked[n]
                 st.lut = LutInfo(work_dir / f"{st.identity[:16]}.cube", len(baked[n].text.encode("utf-8")), baked[n].sha256)
             states[n] = st
         self._states = states
@@ -354,7 +361,7 @@ class Executor:
                   "input": states[n].node.inputs[0] if states[n].node.inputs else None, "parameters": states[n].node.parameters,
                   "intermediate": str(self._intermediate_path(work_dir, states[n], resolved_source.suffix)),
                   "lut": states[n].lut.to_dict() if states[n].lut else None,
-                  **({"ocio": states[n].ocio.provenance()} if states[n].ocio is not None else {})}
+                  **({states[n].baked.kind: states[n].baked.provenance()} if states[n].baked is not None else {})}
                  for n in graph.order if states[n].node.type != "SOURCE"]
         return {"plan_id": plan_id, "project_id": project.project_id, "work_dir": str(work_dir), "graph": graph.to_dict(),
                 "source": {k: v for k, v in source.items()},
@@ -385,7 +392,7 @@ class Executor:
                 args.append("--force")
             args += ["--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], "-o", o]
             return args
-        if node.type in ("OCIO_TRANSFORM", "MATCH_CAMERA"):
+        if node.type in ("OCIO_TRANSFORM", "MATCH_CAMERA", "LEGALIZE"):
             assert st.lut is not None
             args = [src, "--lut", self._lut_arg(st.lut.path)]
             if hdr_input:
@@ -454,11 +461,14 @@ class Executor:
             if stale.exists():
                 stale.unlink()
         try:
-            if st.ocio is not None:
+            if st.baked is not None:
                 self._write_baked_lut(st)
             hdr_input = bool(upstream.artifact.hdr) if upstream.artifact else False
             if node.type == "MATCH_CAMERA":
                 self._fit_match(st, upstream, work_dir, timeout)
+            if node.type == "LEGALIZE" and hdr_input:
+                raise ColorError("INVALID_INPUT", f"LEGALIZE {node.node_id}: the input is HDR; --lut writes BT.709 and the limits here are BT.709's, "
+                                 "run HDR_TO_SDR first", {"reason": "hdr_input", "node_id": node.node_id})
             argv = self._argv(st, self._artifact_path(upstream), graded, hdr_input)
             # LUT_APPLY runs with cwd at the LUT's own directory so --lut can be a bare file name (see _lut_arg):
             # no drive letter, no colon, regardless of what drive the LUT/workspace/ffmpeg-skill checkout are on
@@ -478,7 +488,7 @@ class Executor:
         manifest.write_text(json.dumps({"schema": MANIFEST_SCHEMA, "operation_id": st.identity, "type": node.type, "parameters": node.parameters,
                                         "input_hash": st.input_hash, "lut": st.lut.to_dict() if st.lut else None, "artifact": st.artifact.to_dict(),
                                         "measurements": st.measurements, "reencoded": st.reencoded, "dropped_non_av_streams": st.dropped_non_av_streams,
-                                        "retagged": st.retagged, "ocio": st.ocio.provenance() if st.ocio is not None else None,
+                                        "retagged": st.retagged, **({st.baked.kind: st.baked.provenance()} if st.baked is not None else {}),
                                         "tool": f"ffmpeg-skill/{st.tool}", "tool_versions": dict(self.tool_versions),
                                         "skill": SKILL_ID, "skill_version": VERSION}, indent=2, sort_keys=True), encoding="utf-8")
         st.status = "completed"
@@ -497,14 +507,14 @@ class Executor:
     def _write_baked_lut(st: NodeState) -> None:
         """The baked .cube next to the intermediates, written once per identity; its bytes are checked against the
         hash the identity was computed from, so what ffmpeg-skill reads is exactly what provenance names."""
-        assert st.lut is not None and st.ocio is not None
+        assert st.lut is not None and st.baked is not None
         path = st.lut.path
-        if path.is_file() and sha256_file(str(path)) == st.ocio.sha256:
+        if path.is_file() and sha256_file(str(path)) == st.baked.sha256:
             return
         tmp = path.with_name(path.name + ".tmp")
-        tmp.write_bytes(st.ocio.text.encode("utf-8"))
+        tmp.write_bytes(st.baked.text.encode("utf-8"))
         os.replace(str(tmp), str(path))
-        if sha256_file(str(path)) != st.ocio.sha256:
+        if sha256_file(str(path)) != st.baked.sha256:
             raise ColorError("INTERNAL_ERROR", "baked LUT on disk does not match its hash", {"path": str(path)})
 
     def _match_frames_dir(self, st: NodeState, work_dir: Path) -> Path:
@@ -589,7 +599,7 @@ class Executor:
         if st.node.type == "MATCH_CAMERA" and isinstance(m.get("lut"), dict):
             st.lut = LutInfo(Path(m["lut"]["path"]), int(m["lut"]["size"]), m["lut"]["sha256"])
         st.tool_commands = []
-        if st.ocio is not None:
+        if st.baked is not None:
             self._write_baked_lut(st)
         return True
 
@@ -646,7 +656,7 @@ class Executor:
             if got != want:
                 raise ColorError("VALIDATION_ERROR", f"{what}: output colour tags {got} do not match the destination's {want} ({st.node.parameters['output_tags']})",
                                  {"reason": "destination_tags_mismatch", "path": str(path), "got": list(got), "want": list(want)})
-        if st.node.type in ("LUT_APPLY", "OCIO_TRANSFORM", "MATCH_CAMERA") and video.get("pix_fmt") != "yuv420p":
+        if st.node.type in ("LUT_APPLY", "OCIO_TRANSFORM", "MATCH_CAMERA", "LEGALIZE") and video.get("pix_fmt") != "yuv420p":
             raise ColorError("VALIDATION_ERROR", f"{what}: output pixel format {video.get('pix_fmt')!r} is not 'yuv420p'", {"reason": "pix_fmt_mismatch", "path": str(path)})
         # subtitle/data-stream survival: ffmpeg-skill >= 0.12.1 tries to keep a source's subtitle/data streams
         # through every re-encoding colour operation and says so honestly (dropped_non_av_streams) when it could
@@ -729,8 +739,8 @@ class Executor:
                      "parameters": s.node.parameters, "input_hash": s.input_hash, "output_hash": s.artifact.sha256 if s.artifact else None}
             if s.lut is not None:
                 entry["lut"] = s.lut.to_dict()
-            if s.ocio is not None:
-                entry["ocio"] = s.ocio.provenance()
+            if s.baked is not None:
+                entry[s.baked.kind] = s.baked.provenance()
             if s.reference is not None:
                 entry["reference"] = s.reference.to_dict()
             if s.retagged is not None:

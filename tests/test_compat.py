@@ -200,12 +200,13 @@ def test_checkout_without_a_contract_is_read_through_help(tmp_path):
     assert d["checks"]["ffmpeg_skill"]["status"] == "ok"
     assert d["checks"]["capabilities"]["ffmpeg"] == "unknown"
     ops = d["checks"]["operations"]
-    assert all(o["status"] == "unknown" for t, o in ops.items() if t != "MATCH_CAMERA")
-    # MATCH_CAMERA is the one operation this fake checkout really cannot serve: it has no look.py, and 0.13.0 predates
-    # the --lut fix MATCH_CAMERA needs (ADR-23); doctor says so (degraded, not fail) instead of reporting it unknown
+    assert all(o["status"] == "unknown" for t, o in ops.items() if t not in ("MATCH_CAMERA", "LEGALIZE"))
+    # the operations this fake checkout really cannot serve: it has no look.py, and 0.13.0 predates the --lut fix
+    # MATCH_CAMERA and LEGALIZE need (ADR-23, ADR-24); doctor says so (degraded, not fail) instead of reporting unknown
     assert ops["MATCH_CAMERA"]["status"] == "unsupported"
     assert ops["MATCH_CAMERA"]["missing"] == ["ffmpeg-skill/look", "ffmpeg-skill/color:lut-bt709-legs"]
-    assert d["status"] == "degraded" and d["unavailable_operations"] == ["MATCH_CAMERA"]
+    assert ops["LEGALIZE"]["status"] == "unsupported" and ops["LEGALIZE"]["missing"] == ["ffmpeg-skill/color:lut-bt709-legs"]
+    assert d["status"] == "degraded" and d["unavailable_operations"] == ["LEGALIZE", "MATCH_CAMERA"]
 
 
 def test_doctor_reports_what_was_detected(tmp_path):

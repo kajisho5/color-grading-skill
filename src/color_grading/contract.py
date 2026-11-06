@@ -31,7 +31,7 @@ PINNED_SHAPE_TYPES = "HDR_TO_SDR|LUT_APPLY|RETAG|STRIP_DOVI|PRIMARY_CORRECTION"
 CAPABILITY_IDS: Dict[str, str] = {
     "HDR_TO_SDR": "color.hdr_to_sdr", "LUT_APPLY": "color.lut_apply", "RETAG": "color.retag", "STRIP_DOVI": "color.strip_dovi",
     "PRIMARY_CORRECTION": "color.primary_correction", "OCIO_TRANSFORM": "color.ocio_transform",
-    "MATCH_CAMERA": "color.match_camera",
+    "MATCH_CAMERA": "color.match_camera", "LEGALIZE": "color.legalize",
 }
 
 
@@ -163,8 +163,10 @@ def skill_contract() -> Dict[str, Any]:
         # additions to `provenance` and `request` live here, not in those blocks: video-production-agent pins them and treats
         # any change there as a protocol change that makes this skill unavailable until it re-pins (its ADR-045; ADR-26)
         "provenance_extensions": {"per_operation": ["lut (also OCIO_TRANSFORM, MATCH_CAMERA)", "ocio (OCIO_TRANSFORM)", "retagged (OCIO_TRANSFORM)",
-                                                    "reference (MATCH_CAMERA)", "measurements.delta_e2000 / fit / frames (MATCH_CAMERA)"],
-                                  "identity": "OCIO_TRANSFORM: the config's serialized sha256 and the baked LUT's sha256; MATCH_CAMERA: the reference video's sha256"},
+                                                    "reference (MATCH_CAMERA)", "measurements.delta_e2000 / fit / frames (MATCH_CAMERA)",
+                                                    "legalize (LEGALIZE: profile, limits, knee, lut_sha256, out_of_range_share {measured: false, reason})"],
+                                  "identity": "OCIO_TRANSFORM: the config's serialized sha256 and the baked LUT's sha256; MATCH_CAMERA: the reference video's sha256; "
+                                              "LEGALIZE: the LUT's sha256"},
         "request_types": {"operation_types": sorted(OPERATION_TYPES), "aliases": sorted(OPERATION_ALIASES),
                           "note": "request.shape lists the 0.4.0 types as an example; every type above is accepted"},
         "schema_versions": {"contract": str(CONTRACT_SCHEMA_VERSION), "request": str(REQUEST_SCHEMA_VERSION), "response": str(RESPONSE_SCHEMA_VERSION), "doctor": str(DOCTOR_SCHEMA_VERSION)},
