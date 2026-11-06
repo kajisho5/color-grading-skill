@@ -76,7 +76,8 @@ CUBE_EXTENSIONS = (".cube",)        # the only LUT format ffmpeg-skill/color acc
 MAX_OPERATIONS = 200
 
 # ---- parameter schemas: name -> {type, required, min, max, enum, default, description}
-_NUM, _INT, _BOOL, _STR, _PATCHES = "number", "integer", "boolean", "string", "patches"
+_NUM, _INT, _BOOL, _STR = "number", "integer", "boolean", "string"
+_PATCHES = "patches"     # validated by _patches(); declared to consumers as a string (see _param_schema in contract.py)
 MAX_PATCHES = 64
 
 # common encode parameters accepted by every re-encoding mode of ffmpeg-skill/color (--crf / --preset); RETAG and
@@ -160,8 +161,9 @@ OPERATION_TYPES: Dict[str, Dict[str, Any]] = {
         "at": {"type": _NUM, "required": False, "min": 0.0, "max": 86400.0, "default": 0.0, "description": "time of the matching frame in this operation's input, seconds"},
         "model": {"type": _STR, "required": False, "enum": list(MATCH_MODELS), "default": "curves", "description": "curves: one monotone curve per channel; "
                   "matrix: 3x3 matrix + offset (corrects cross-channel differences too)"},
-        "patches": {"type": _PATCHES, "required": False, "default": None, "description": f"up to {MAX_PATCHES} stated patches, each "
-                    "{reference: [x, y, w, h], input: [x, y, w, h]} in fractions of the frame; omitted: the whole frame, which needs the same framing"},
+        "patches": {"type": _PATCHES, "required": False, "default": None, "description": f"up to {MAX_PATCHES} stated patches, ';'-separated, each "
+                    "'x,y,w,h' (the same rectangle in both frames) or 'x,y,w,h/x,y,w,h' (reference / input), fractions of the frame; omitted: the whole "
+                    "frame, which needs the same framing"},
         "lut_size": {"type": _INT, "required": False, "enum": [17, 33, 65], "default": 33, "description": "edge length of the written 3D LUT"},
         **_ENCODE_PARAMS, **_AUDIO_STREAM_PARAM}},
 }
@@ -324,23 +326,45 @@ def validate_parameters(op_type: str, params: Any, where: str) -> Dict[str, Any]
     return out
 
 
-def _rect(value: Any, where: str) -> List[float]:
-    if not isinstance(value, list) or len(value) != 4:
-        raise ColorError("INVALID_REQUEST", f"{where} must be [x, y, w, h]", {"field": where})
-    x, y, w, h = (_number(v, f"{where}[{i}]", 0.0, 1.0) for i, v in enumerate(value))
+def _rect(text: str, where: str) -> List[float]:
+    parts = text.split(",")
+    if len(parts) != 4:
+        raise ColorError("INVALID_REQUEST", f"{where}: a rectangle is x,y,w,h (fractions of the frame), got {text!r}", {"field": where})
+    try:
+        vals = [float(p) for p in parts]
+    except ValueError:
+        raise ColorError("INVALID_REQUEST", f"{where}: a rectangle is four numbers x,y,w,h, got {text!r}", {"field": where})
+    x, y, w, h = (_number(v, where, 0.0, 1.0) for v in vals)
     if w <= 0 or h <= 0 or x + w > 1.0 + 1e-9 or y + h > 1.0 + 1e-9:
-        raise ColorError("INVALID_REQUEST", f"{where}: a non-empty rectangle inside the frame (fractions 0..1)", {"field": where})
+        raise ColorError("INVALID_REQUEST", f"{where}: {text!r} is not a non-empty rectangle inside the frame (fractions 0..1)", {"field": where})
     return [x, y, w, h]
 
 
-def _patches(value: Any, where: str) -> List[Dict[str, List[float]]]:
-    if not isinstance(value, list) or not value or len(value) > MAX_PATCHES:
-        raise ColorError("INVALID_REQUEST", f"{where} must be a non-empty array of at most {MAX_PATCHES} patches", {"field": where})
+def parse_patches(text: str, where: str = "patches") -> List[Dict[str, List[float]]]:
+    """MATCH_CAMERA's `patches` string: `;`-separated patches, each `x,y,w,h` (the same rectangle in both frames) or
+    `x,y,w,h/x,y,w,h` (reference rectangle / input rectangle), in fractions of the frame. A string, not an array, so the
+    parameter keeps one of the four scalar types every consumer of this contract validates (ADR-26)."""
+    items = [p.strip() for p in text.split(";") if p.strip()]
+    if not items or len(items) > MAX_PATCHES:
+        raise ColorError("INVALID_REQUEST", f"{where}: 1 to {MAX_PATCHES} patches, ';'-separated", {"field": where})
     out = []
-    for i, p in enumerate(value):
-        d = _obj(p, f"{where}[{i}]", ("reference", "input"), ("reference", "input"))
-        out.append({"reference": _rect(d["reference"], f"{where}[{i}].reference"), "input": _rect(d["input"], f"{where}[{i}].input")})
+    for i, item in enumerate(items):
+        halves = item.split("/")
+        if len(halves) > 2:
+            raise ColorError("INVALID_REQUEST", f"{where}[{i}]: x,y,w,h or x,y,w,h/x,y,w,h, got {item!r}", {"field": where})
+        ref = _rect(halves[0].strip(), f"{where}[{i}].reference")
+        inp = _rect(halves[-1].strip(), f"{where}[{i}].input")
+        out.append({"reference": ref, "input": inp})
     return out
+
+
+def _patches(value: Any, where: str) -> str:
+    """Validated, in a canonical spelling (so two spellings of the same patches have one identity)."""
+    if not isinstance(value, str):
+        raise ColorError("INVALID_REQUEST", f"{where} must be a string: 'x,y,w,h[/x,y,w,h];...'", {"field": where})
+    def r(v: List[float]) -> str:
+        return ",".join(f"{c:g}" for c in v)
+    return ";".join(f"{r(p['reference'])}/{r(p['input'])}" for p in parse_patches(value, where))
 
 
 def _validate_ocio(params: Dict[str, Any], where: str) -> None:

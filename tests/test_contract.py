@@ -103,3 +103,24 @@ def test_capability_status_table():
     assert s["filter:tonemap"] == "unknown" and s["bsf:filter_units"] == "unsupported"  # not a filter: capability, the detection defect does not apply
     s = capability_status(Info(), {"ffmpeg": "6.1", "ffprobe": "6.1", "available": ["filter:lut3d"], "missing": ["filter:zscale"], "missing_optional": []})
     assert s["filter:zscale"] == "unsupported"                                                     # some filters detected: a missing one is really missing
+
+
+# ---- what a pinned consumer compares (ADR-26)
+def test_blocks_a_consumer_pins_are_unchanged_since_0_4_0():
+    """video-production-agent pins this contract and makes the skill unavailable when one of these blocks changes
+    (its ADR-045: protocol / execution shape). The snapshot is those blocks of the 0.4.0 contract it pins; new facts go
+    into new keys (provenance_extensions, request_types, ocio, alpha, ...), never into these."""
+    import json
+    from pathlib import Path
+    pinned = json.loads((Path(__file__).parent / "fixtures" / "contract_0.4.0_pinned_blocks.json").read_text(encoding="utf-8"))
+    live = skill_contract()
+    for key, value in pinned.items():
+        assert live[key] == value, key
+
+
+def test_every_parameter_has_one_of_the_four_scalar_types():
+    """The types every consumer of the contract validates (video-production-agent's check_contract)."""
+    for op in skill_contract()["operations"]:
+        for name, ps in op["parameters"].items():
+            assert ps["type"] in ("number", "integer", "string", "boolean"), (op["type"], name, ps["type"])
+    assert set(skill_contract()["request_types"]["operation_types"]) == set(OPERATION_TYPES)

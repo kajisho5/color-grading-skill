@@ -15,6 +15,8 @@ from .model import (CUBE_EXTENSIONS, FORBIDDEN_KEYS, ID_RE, MAX_LUT_BYTES, MAX_O
                     OPERATION_ALIASES, REQUEST_SCHEMA_ID, RETAG_TAGS, RETAG_TARGETS, TONEMAPS, UNSUPPORTED_OPERATIONS, X264_PRESETS)
 
 CONTRACT_SCHEMA_ID = f"{SKILL_ID}/contract@{CONTRACT_SCHEMA_VERSION}"
+# request.shape's example type list, exactly as 0.4.0 published it (ADR-26: the `request` block is pinned by consumers)
+PINNED_SHAPE_TYPES = "HDR_TO_SDR|LUT_APPLY|RETAG|STRIP_DOVI|PRIMARY_CORRECTION"
 
 # Cross-repository Capability ids (kajisho5/AI-video-production-OS docs/SPEC.md
 # `CapabilityContract.provides`), matching the ids already assigned to this Skill's
@@ -63,7 +65,13 @@ def operation_aliases() -> List[Dict[str, Any]]:
 
 
 def _param_schema(ps: Dict[str, Any]) -> Dict[str, Any]:
-    return {k: v for k, v in ps.items() if k in ("type", "required", "min", "max", "enum", "default", "description")}
+    """Every parameter is declared with one of the four scalar types (number, integer, string, boolean), the set a
+    consumer such as video-production-agent validates; a structured value travels as a string with a grammar (ADR-26)."""
+    d = {k: v for k, v in ps.items() if k in ("type", "required", "min", "max", "enum", "default", "description")}
+    if d.get("type") == "patches":
+        d["type"] = "string"
+        d["format"] = "x,y,w,h[/x,y,w,h](;...)"
+    return d
 
 
 def operation_specs() -> List[Dict[str, Any]]:
@@ -128,7 +136,7 @@ def skill_contract() -> Dict[str, Any]:
                     "work_dir": f"<workspace>/{WORK_DIR_NAME}/<project_id>/"},
         "execution": {"mode": "local", "canonical_invocation": ["color-grading", "run", "-", "--json"], "stdin": REQUEST_SCHEMA_ID,
                       "stdout": f"exactly one {SKILL_ID}/response@{RESPONSE_SCHEMA_VERSION} document", "stderr": "diagnostics only",
-                      "executables": ["python3 <ffmpeg-skill>/scripts/{probe,color,look}.py (argv lists; look only for MATCH_CAMERA)"],
+                      "executables": ["python3 <ffmpeg-skill>/scripts/{probe,color}.py (argv lists)"],
                       "executable_resolution": "ffmpeg-skill directory: --ffmpeg-skill, COLOR_GRADING_FFMPEG_SKILL_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR, "
                                                "~/.claude/skills/ffmpeg-skill, ./vendor/ffmpeg-skill, ../ffmpeg-skill; ffmpeg/ffprobe: PATH lookup by ffmpeg-skill",
                       "shell": False, "arbitrary_executables": False, "arbitrary_filters": False, "network": False, "input_mutation": False, "ai": False},
@@ -142,17 +150,23 @@ def skill_contract() -> Dict[str, Any]:
         "request": {"schema": REQUEST_SCHEMA_ID, "id_pattern": ID_RE.pattern, "reference_pattern": REF_RE.pattern, "forbidden_fields": sorted(FORBIDDEN_KEYS),
                     "max_operations": MAX_OPERATIONS,
                     "shape": {"schema": REQUEST_SCHEMA_ID, "project": {"project_id": "id", "source": {"source_id": "id", "path": "file"},
-                              "operations": [{"op_id": "id", "type": "|".join(OPERATION_TYPES), "input": "source|op:<id>", "parameters": {}}],
+                              "operations": [{"op_id": "id", "type": PINNED_SHAPE_TYPES, "input": "source|op:<id>", "parameters": {}}],
                               "outputs": [{"output_id": "id", "operation": "source|op:<id>", "path": "file", "format": "mp4|mov|m4v|mkv", "overwrite?": False,
                                            "expect?": {"width?": 1920, "height?": 1080, "duration?": 0, "duration_tolerance?": 0.2, "pix_fmt?": "yuv420p"}}]},
                               "options?": {"reuse_intermediates?": True, "timeout?": 600}}},
         "response": {"schema": f"{SKILL_ID}/response@{RESPONSE_SCHEMA_VERSION}", "success": {"ok": True, "status": "ok", "dry_run": "bool", "plan": "...", "results": "[OperationResult]", "outputs": "[output artifact + provenance]"},
                      "failure": {"ok": False, "status": "error|cancelled", "error": {"code": "one of errors.codes", "message": "str", "retryable": "bool", "details": {}}}},
-        "provenance": {"per_operation": ["operation_id", "type", "tool", "tool_versions", "parameters", "input_hash", "output_hash", "status", "measurements", "tool_commands_observed", "lut (LUT_APPLY / OCIO_TRANSFORM)",
-                                          "ocio (OCIO_TRANSFORM only)", "retagged (OCIO_TRANSFORM only)"],
+        "provenance": {"per_operation": ["operation_id", "type", "tool", "tool_versions", "parameters", "input_hash", "output_hash", "status", "measurements", "tool_commands_observed", "lut (LUT_APPLY only)"],
                        "per_output": ["skill", "skill_version", "tool_versions", "output_hash", "operations (chain)", "source (sha256)"],
                        "identity": "sha256 over canonical JSON of {type, parameters, input identity, tool versions}; a LUT_APPLY identity uses the LUT's sha256, not its path; "
                                    "the source's identity is its file sha256; no timestamps, no UUIDs"},
+        # additions to `provenance` and `request` live here, not in those blocks: video-production-agent pins them and treats
+        # any change there as a protocol change that makes this skill unavailable until it re-pins (its ADR-045; ADR-26)
+        "provenance_extensions": {"per_operation": ["lut (also OCIO_TRANSFORM, MATCH_CAMERA)", "ocio (OCIO_TRANSFORM)", "retagged (OCIO_TRANSFORM)",
+                                                    "reference (MATCH_CAMERA)", "measurements.delta_e2000 / fit / frames (MATCH_CAMERA)"],
+                                  "identity": "OCIO_TRANSFORM: the config's serialized sha256 and the baked LUT's sha256; MATCH_CAMERA: the reference video's sha256"},
+        "request_types": {"operation_types": sorted(OPERATION_TYPES), "aliases": sorted(OPERATION_ALIASES),
+                          "note": "request.shape lists the 0.4.0 types as an example; every type above is accepted"},
         "schema_versions": {"contract": str(CONTRACT_SCHEMA_VERSION), "request": str(REQUEST_SCHEMA_VERSION), "response": str(RESPONSE_SCHEMA_VERSION), "doctor": str(DOCTOR_SCHEMA_VERSION)},
         "errors": {"codes": list(ERROR_CODES), "exit_codes": dict(EXIT_CODES), "retryable": {c: ERROR_TABLE[c][1] for c in ERROR_CODES}, "success_exit_code": 0},
         "deterministic": True,

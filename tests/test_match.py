@@ -123,10 +123,13 @@ def _op(**params):
 @pytest.mark.parametrize("params,field", [
     ({}, "reference_path"),
     ({"reference_path": "a.mp4", "model": "lut"}, "model"),
-    ({"reference_path": "a.mp4", "patches": []}, "patches"),
-    ({"reference_path": "a.mp4", "patches": [{"reference": [0, 0, 0.5, 0.5]}]}, "input"),
-    ({"reference_path": "a.mp4", "patches": [{"reference": [0, 0, 0.5, 0.5], "input": [0.8, 0, 0.5, 0.5]}]}, "input"),
-    ({"reference_path": "a.mp4", "patches": [{"reference": [0, 0, 0, 0.5], "input": [0, 0, 0.5, 0.5]}]}, "reference"),
+    ({"reference_path": "a.mp4", "patches": " ; "}, "patches"),
+    ({"reference_path": "a.mp4", "patches": [{"reference": [0, 0, 0.5, 0.5]}]}, "patches"),
+    ({"reference_path": "a.mp4", "patches": "0,0,0.5"}, "reference"),
+    ({"reference_path": "a.mp4", "patches": "0,0,0.5,0.5/0.8,0,0.5,0.5"}, "input"),
+    ({"reference_path": "a.mp4", "patches": "0,0,0,0.5/0,0,0.5,0.5"}, "reference"),
+    ({"reference_path": "a.mp4", "patches": "0,0,a,0.5"}, "reference"),
+    ({"reference_path": "a.mp4", "patches": "0,0,.5,.5/0,0,.5,.5/0,0,.5,.5"}, "patches"),
     ({"reference_path": "a.mp4", "lut_size": 129}, "lut_size"),
     ({"reference_path": "a.mp4", "at": -1}, "at"),
 ])
@@ -134,6 +137,13 @@ def test_invalid_parameters_are_rejected_naming_the_field(params, field):
     with pytest.raises(ColorError) as e:
         parse_request(request_doc([_op(**params)]))
     assert e.value.code == "INVALID_REQUEST" and field in (e.value.details.get("field") or "") + e.value.message
+
+
+def test_patches_are_a_string_with_a_canonical_spelling():
+    p = parse_request(request_doc([_op(reference_path="a.mp4", patches=" 0,0,0.25,0.25 ; 0.5,0.5,0.2,0.2/0.4,0.4,0.2,0.2")])).project.operations[0].parameters
+    assert p["patches"] == "0,0,0.25,0.25/0,0,0.25,0.25;0.5,0.5,0.2,0.2/0.4,0.4,0.2,0.2"
+    from color_grading.model import parse_patches
+    assert parse_patches(p["patches"])[1] == {"reference": [0.5, 0.5, 0.2, 0.2], "input": [0.4, 0.4, 0.2, 0.2]}
 
 
 def test_defaults():
@@ -222,7 +232,7 @@ def test_camera_b_matches_camera_a_within_delta_e_2(workspace, skill_dir):
 
 
 def test_matrix_on_stated_patches(workspace, skill_dir):
-    patches = [{"reference": [x, y, 0.2, 0.2], "input": [x, y, 0.2, 0.2]} for x in (0.0, 0.4, 0.8) for y in (0.0, 0.4, 0.8)]
+    patches = ";".join(f"{x},{y},0.2,0.2" for x in (0.0, 0.4, 0.8) for y in (0.0, 0.4, 0.8))
     code, d = _run(_doc(model="matrix", patches=patches))
     if _refused_here(skill_dir, code, d):
         return

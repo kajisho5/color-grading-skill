@@ -314,8 +314,8 @@
   differences show at every cut; matching them by hand per camera is slow and unrecorded.
   - *Request.* The operation's input is camera B. `reference_path` (camera A, resolved through the *input* path
     policy and identified by its sha256), `at` / `reference_at` (the two frame times, seconds), `model` (`curves`,
-    default, or `matrix`), optional `patches` (up to 64 `{reference: [x, y, w, h], input: [x, y, w, h]}` in
-    fractions of the frame), `lut_size` (17 / 33 / 65, default 33) and the encode parameters. The caller names the
+    default, or `matrix`), optional `patches` (up to 64, a string `x,y,w,h[/x,y,w,h];...` in fractions of
+    the frame, ADR-26), `lut_size` (17 / 33 / 65, default 33) and the encode parameters. The caller names the
     frames and, optionally, the patches; nothing here looks for a matching shot (`not_provided` says so).
   - *Who touches media.* ffmpeg-skill/look (`--at T --width 320 --no-timecode`) extracts the two frames as PNG; this
     skill decodes them (`match.read_png`: 8/16-bit RGB(A), the five PNG filters), fits, writes the cube, and
@@ -350,3 +350,23 @@
   - *Contract.* New operation and Capability id `color.match_camera` (EXPERIMENTAL); `dependencies[0].optional_tools`
     (`ffmpeg-skill/look`); `ffmpeg_skill.flags_used.look`; "shot matching" in `not_provided` becomes "automatic shot
     matching". Additive for a pinned consumer.
+- **ADR-26 Contract compatibility with a pinned consumer: the pinned blocks stay byte-identical; parameters keep the
+  four scalar types.** video-production-agent pins this contract (its `contract_0.4.0.json`) and, per its ADR-045,
+  treats a change in `schema`, `skill_id`, `kind`, `request`, `response`, `provenance`, `execution`,
+  `schema_versions`, `errors`, `lut`, `color_space` or `hdr_sdr` as a protocol change that makes this skill
+  unavailable until it re-pins; its `check_contract` also refuses any operation parameter whose `type` is not
+  `number` / `integer` / `string` / `boolean`. Steps 5 and 6 (#31, #32) had changed `request.shape`'s example type
+  list, `provenance.per_operation` and `execution.executables`, and declared MATCH_CAMERA's `patches` as an array
+  (`check_contract`: "parameter 'patches' has no typed schema"), so main stopped being usable by the agent.
+  - *Decision.* Those blocks are restored to exactly what 0.4.0 published, and
+    `tests/test_contract.py::test_blocks_a_consumer_pins_are_unchanged_since_0_4_0` compares them with a snapshot of
+    the agent's pinned contract (`tests/fixtures/contract_0.4.0_pinned_blocks.json`). New facts go into new keys:
+    `provenance_extensions`, `request_types` (every accepted operation type and alias), and the existing additive
+    blocks (`ocio`, `optional_dependencies`, `ffmpeg_skill.flags_used.look`, `dependencies[0].optional_tools`).
+  - *`patches` becomes a string* with a grammar: `;`-separated patches, each `x,y,w,h` (the same rectangle in both
+    frames) or `x,y,w,h/x,y,w,h` (reference / input), fractions of the frame; normalised to a canonical spelling so
+    two spellings have one identity. Declared as `type: string` with `format`. A test asserts every parameter of
+    every operation has one of the four types.
+  - *Effect on the agent.* With this, the agent's pinned 0.4.0 contract shows no breaking drift and passes
+    `check_contract` against the live contract (checked with the agent's own functions); the new operations appear as
+    capability it does not use until it re-pins.
