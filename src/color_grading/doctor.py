@@ -11,13 +11,33 @@ from typing import Any, Dict, List, Optional
 from . import DOCTOR_SCHEMA_VERSION, SKILL_ID, VERSION
 from .adapter import FfmpegSkill
 from .errors import ColorError
-from .executor import TOOL_FOR
+from . import ocio as ocio_mod
+from .executor import PYTHON_CAPABILITIES, TOOL_FOR
 from .model import OPERATION_TYPES, OUTPUT_FORMATS, UNSUPPORTED_OPERATIONS
 from .security import PathPolicy
 
 DOCTOR_SCHEMA_ID = f"{SKILL_ID}/doctor@{DOCTOR_SCHEMA_VERSION}"
 # capabilities used across the implemented operations, beyond the base ffmpeg/ffprobe pair
-ALL_CAPABILITIES = sorted({c for _, extra in TOOL_FOR.values() for c in extra})
+ALL_CAPABILITIES = sorted({c for _, extra in TOOL_FOR.values() for c in extra if c not in PYTHON_CAPABILITIES})
+
+
+# ffmpeg-skill release whose --lut converts to RGB and back with one matrix (its #410). Reported as a warning, never
+# gated on: it is a behaviour fix with no flag to detect (ADR-19 gates only on flags; ADR-22)
+LUT_LEGS_FIXED_IN = (3, 1, 6)
+
+
+def _version_tuple(version: str) -> Optional[tuple]:
+    parts = str(version).split(".")[:3]
+    try:
+        return tuple(int(p) for p in parts) if len(parts) == 3 else None
+    except ValueError:
+        return None
+
+
+def python_capabilities() -> Dict[str, str]:
+    """Capabilities this skill provides itself: an optional Python module is importable or it is not (ADR-22).
+    Independent of ffmpeg-skill, so a missing extra makes only the operations that need it unavailable."""
+    return {ocio_mod.CAPABILITY: "supported" if ocio_mod.status()["available"] else "unsupported"}
 
 
 def ffmpeg_skill_doctor(skill: FfmpegSkill, timeout: float = 120.0) -> Dict[str, Any]:
@@ -40,7 +60,7 @@ def ffmpeg_skill_doctor(skill: FfmpegSkill, timeout: float = 120.0) -> Dict[str,
 
 def capability_status(skill_info: Optional[Any], ffdoc: Dict[str, Any]) -> Dict[str, str]:
     """capability name -> supported | unsupported | unknown."""
-    status: Dict[str, str] = {}
+    status: Dict[str, str] = dict(python_capabilities())
     have_skill = skill_info is not None and skill_info.supported
     status["ffmpeg-skill"] = "supported" if have_skill else "unsupported"
     if have_skill and ffdoc.get("_unavailable"):
@@ -107,7 +127,16 @@ def doctor_report(ffmpeg_skill_dir: Optional[str] = None, workspace: Optional[st
         problems.append("ffmpeg-skill: " + e.message)
     caps = capability_status(info, ffdoc)
     checks["capabilities"] = caps
+    oc = ocio_mod.status()
+    checks["ocio"] = {"status": "ok" if oc["available"] else "missing", "module": ocio_mod.MODULE, "version": oc["version"],
+                      "optional": True, "needed_by": sorted(t for t, (_, extra) in TOOL_FOR.items() if ocio_mod.CAPABILITY in extra),
+                      **({} if oc["available"] else {"install": ocio_mod.INSTALL_HINT, "detail": oc["error"]})}
     warnings: List[str] = list(warnings_pre)
+    if info is not None and _version_tuple(info.version) is not None and _version_tuple(info.version) < LUT_LEGS_FIXED_IN:
+        warnings.append(f"ffmpeg-skill {info.version} converts to RGB for --lut with BT.709 and back with BT.601 (ffmpeg-skill #410, fixed in "
+                        f"{'.'.join(map(str, LUT_LEGS_FIXED_IN))}): LUT_APPLY / OCIO_TRANSFORM colours shift; update ffmpeg-skill for colour-accurate LUTs")
+    if not oc["available"]:
+        warnings.append(f"optional {ocio_mod.MODULE} is not installed: OCIO_TRANSFORM is unavailable, every other operation is unaffected ({ocio_mod.INSTALL_HINT})")
     detection = ffdoc.get("detection") or {}
     if detection:
         checks["ffmpeg_skill_detection"] = detection

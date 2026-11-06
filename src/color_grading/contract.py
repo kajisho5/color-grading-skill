@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 from . import CONTRACT_SCHEMA_VERSION, DOCTOR_SCHEMA_VERSION, PACKAGE_NAME, REQUEST_SCHEMA_VERSION, RESPONSE_SCHEMA_VERSION, SKILL_ID, VERSION
 from .adapter import FLAG_ALTERNATIVES, FLAGS_USED, KNOWN_CONTRACT_VERSION, KNOWN_CONTRACT_VERSIONS, REQUIRED_FLAGS, TOOLS_USED
 from .errors import ERROR_CODES, ERROR_TABLE, EXIT_CODES
+from . import ocio as ocio_mod
 from .executor import DURATION_TOLERANCE, TOOL_FOR, WORK_DIR_NAME
 from .model import (CUBE_EXTENSIONS, FORBIDDEN_KEYS, ID_RE, MAX_LUT_BYTES, MAX_OPERATIONS, OPERATION_TYPES, OUTPUT_FORMATS, REF_RE,
                     OPERATION_ALIASES, REQUEST_SCHEMA_ID, RETAG_TAGS, RETAG_TARGETS, TONEMAPS, UNSUPPORTED_OPERATIONS, X264_PRESETS)
@@ -27,7 +28,7 @@ CONTRACT_SCHEMA_ID = f"{SKILL_ID}/contract@{CONTRACT_SCHEMA_VERSION}"
 # `chapter` ids) -- to be reconciled if/when the OS-side matrix gains its own entry.
 CAPABILITY_IDS: Dict[str, str] = {
     "HDR_TO_SDR": "color.hdr_to_sdr", "LUT_APPLY": "color.lut_apply", "RETAG": "color.retag", "STRIP_DOVI": "color.strip_dovi",
-    "PRIMARY_CORRECTION": "color.primary_correction",
+    "PRIMARY_CORRECTION": "color.primary_correction", "OCIO_TRANSFORM": "color.ocio_transform",
 }
 
 
@@ -45,6 +46,12 @@ FFMPEG_SKILL_CONTRACT_RANGE = f">={KNOWN_CONTRACT_VERSION} <{int(KNOWN_CONTRACT_
 def dependencies() -> List[Dict[str, Any]]:
     return [{"skill_id": "ffmpeg-skill", "version_range": FFMPEG_SKILL_CONTRACT_RANGE, "range_of": "contract_version", "required": True,
              "tools": [f"ffmpeg-skill/{t}" for t in TOOLS_USED]}]
+
+
+def optional_dependencies() -> List[Dict[str, Any]]:
+    """Python extras this skill can use, each needed by the operations listed; without one, only those are unavailable."""
+    return [{"extra": "ocio", "module": ocio_mod.MODULE, "package": "opencolorio", "licence": "BSD-3-Clause", "capability": ocio_mod.CAPABILITY,
+             "install": ocio_mod.INSTALL_HINT, "needed_by": sorted(t for t, (_, extra) in TOOL_FOR.items() if ocio_mod.CAPABILITY in extra)}]
 
 
 def operation_aliases() -> List[Dict[str, Any]]:
@@ -82,7 +89,8 @@ def skill_contract() -> Dict[str, Any]:
         "schema": CONTRACT_SCHEMA_ID, "skill_id": SKILL_ID, "id": SKILL_ID, "name": PACKAGE_NAME, "package": PACKAGE_NAME, "version": VERSION,
         "contract_version": CONTRACT_SCHEMA_VERSION, "kind": "execution", "role": "colour grading / colour correction execution (processing); not decision, not measurement, not automatic look/LUT selection",
         "description": "Deterministic colour grading execution: HDR-to-SDR tone mapping, 3D .cube LUT application, colour-tag retagging, Dolby Vision RPU "
-                       "removal, and typed primary colour correction (exposure/contrast/saturation/white balance/gamma/lift/gain/levels/curves), executed as "
+                       "removal, typed primary colour correction (exposure/contrast/saturation/white balance/gamma/lift/gain/levels/curves) and OpenColorIO / "
+                       "ACES colour-space transforms (baked to a 3D LUT by the optional PyOpenColorIO, applied through ffmpeg-skill), executed as "
                        "a typed operation graph through ffmpeg-skill's public contract, with output validation and provenance. Not an AI agent: it never "
                        "decides which colour treatment, LUT or look to apply, nor which correction values to use.",
         "repository": "https://github.com/kajisho5/color-grading-skill",
@@ -93,12 +101,21 @@ def skill_contract() -> Dict[str, Any]:
         "tools": tools,
         "provides": capability_provides(),
         "dependencies": dependencies(),
+        "optional_dependencies": optional_dependencies(),
         "operations": operation_specs(),
         "operation_aliases": operation_aliases(),
         "unsupported_operations": [{"type": t, "status": "not_implemented", "reason": r} for t, r in UNSUPPORTED_OPERATIONS.items()],
         "output_formats": {f: {"extension": s["extension"], "note": "must match the source container; this skill does not convert containers"} for f, s in OUTPUT_FORMATS.items()},
         "lut": {"format": "cube", "extensions": list(CUBE_EXTENSIONS), "max_bytes": MAX_LUT_BYTES, "hashed": "sha256, recorded in provenance",
                 "strength_range": [0.0, 1.0], "note": "a LUT is data read by ffmpeg's lut3d filter, never a filter string or executable; path policy applies (allowed_lut_roots)"},
+        "ocio": {"operation": "OCIO_TRANSFORM", "builtin_prefix": ocio_mod.BUILTIN_PREFIX, "default_config": ocio_mod.DEFAULT_CONFIG,
+                 "config_extensions": list(ocio_mod.CONFIG_EXTENSIONS), "lut_sizes": list(ocio_mod.LUT_SIZES), "default_lut_size": ocio_mod.DEFAULT_LUT_SIZE,
+                 "known_destination_tags": dict(ocio_mod.KNOWN_DESTINATION_TAGS),
+                 "execution": "PyOpenColorIO evaluates the transform on the cube's nodes only (no media); ffmpeg-skill/color --lut applies the cube, "
+                              "--retag writes the destination's tags when --lut's BT.709 tags are not them",
+                 "provenance": ["config (name, profile_version, resolved built-in or file sha256, serialized sha256)", "transform (source, destination or display/view, look)",
+                                "lut_size", "lut_sha256", "clamped_values", "accuracy (max/mean error against OpenColorIO's CPU processor on a test chart, 1/1023 units)"],
+                 "test_chart": ocio_mod.CHART_NAME},
         "color_space": {"measured_fields": ["color_space", "color_primaries", "color_transfer", "color_range", "pix_fmt", "hdr", "dolby_vision"],
                         "source": "ffmpeg-skill/probe (ffprobe); OBSERVED, never inferred", "retag_targets": list(RETAG_TARGETS), "retag_tags": {k: list(v) for k, v in RETAG_TAGS.items()},
                         "note": "measurement of input/output colour information is kept separate from the RETAG / HDR_TO_SDR operations that change it (STEP 4 of the design brief)"},
@@ -124,13 +141,14 @@ def skill_contract() -> Dict[str, Any]:
         "request": {"schema": REQUEST_SCHEMA_ID, "id_pattern": ID_RE.pattern, "reference_pattern": REF_RE.pattern, "forbidden_fields": sorted(FORBIDDEN_KEYS),
                     "max_operations": MAX_OPERATIONS,
                     "shape": {"schema": REQUEST_SCHEMA_ID, "project": {"project_id": "id", "source": {"source_id": "id", "path": "file"},
-                              "operations": [{"op_id": "id", "type": "HDR_TO_SDR|LUT_APPLY|RETAG|STRIP_DOVI|PRIMARY_CORRECTION", "input": "source|op:<id>", "parameters": {}}],
+                              "operations": [{"op_id": "id", "type": "|".join(OPERATION_TYPES), "input": "source|op:<id>", "parameters": {}}],
                               "outputs": [{"output_id": "id", "operation": "source|op:<id>", "path": "file", "format": "mp4|mov|m4v|mkv", "overwrite?": False,
                                            "expect?": {"width?": 1920, "height?": 1080, "duration?": 0, "duration_tolerance?": 0.2, "pix_fmt?": "yuv420p"}}]},
                               "options?": {"reuse_intermediates?": True, "timeout?": 600}}},
         "response": {"schema": f"{SKILL_ID}/response@{RESPONSE_SCHEMA_VERSION}", "success": {"ok": True, "status": "ok", "dry_run": "bool", "plan": "...", "results": "[OperationResult]", "outputs": "[output artifact + provenance]"},
                      "failure": {"ok": False, "status": "error|cancelled", "error": {"code": "one of errors.codes", "message": "str", "retryable": "bool", "details": {}}}},
-        "provenance": {"per_operation": ["operation_id", "type", "tool", "tool_versions", "parameters", "input_hash", "output_hash", "status", "measurements", "tool_commands_observed", "lut (LUT_APPLY only)"],
+        "provenance": {"per_operation": ["operation_id", "type", "tool", "tool_versions", "parameters", "input_hash", "output_hash", "status", "measurements", "tool_commands_observed", "lut (LUT_APPLY / OCIO_TRANSFORM)",
+                                          "ocio (OCIO_TRANSFORM only)", "retagged (OCIO_TRANSFORM only)"],
                        "per_output": ["skill", "skill_version", "tool_versions", "output_hash", "operations (chain)", "source (sha256)"],
                        "identity": "sha256 over canonical JSON of {type, parameters, input identity, tool versions}; a LUT_APPLY identity uses the LUT's sha256, not its path; "
                                    "the source's identity is its file sha256; no timestamps, no UUIDs"},

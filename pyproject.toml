@@ -13,6 +13,11 @@ authors = [{name = "kajisho5"}]
 keywords = ["color", "colour", "color-grading", "ffmpeg", "hdr", "lut", "skill"]
 dependencies = []
 
+[project.optional-dependencies]
+# OCIO_TRANSFORM (docs/decisions.md ADR-22): PyOpenColorIO, BSD-3-Clause; 2.3 is the first release with the built-in
+# ACES studio config (ocio://studio-config-latest)
+ocio = ["opencolorio>=2.3"]
+
 [project.scripts]
 color-grading = "color_grading.cli:main"
 
