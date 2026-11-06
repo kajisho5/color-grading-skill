@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -60,6 +61,17 @@ PYTHON_CAPABILITIES = (ocio_mod.CAPABILITY,)
 # capability -> feature key
 CHECKOUT_CAPABILITIES = {"ffmpeg-skill/color:retag-h264-vui": "retag_rewrites_h264_tags", "ffmpeg-skill/look": "look_tool",
                          "ffmpeg-skill/color:lut-bt709-legs": "lut_legs_bt709"}
+
+
+# pixel formats that carry an alpha plane (FFmpeg's names): yuva*, gbrap*, ya8/ya16, rgba/bgra/argb/abgr and their 64-bit forms
+ALPHA_PIX_FMT_RE = re.compile(r"^(yuva|gbrap|ya(8|16)|rgba|bgra|argb|abgr)")
+# operations that re-encode through ffmpeg-skill/color's H.264 4:2:0 path (no alpha plane exists there, ADR-25); RETAG
+# and STRIP_DOVI are stream copies, checked on their output instead
+REENCODING_OPERATIONS = ("HDR_TO_SDR", "LUT_APPLY", "PRIMARY_CORRECTION", "OCIO_TRANSFORM", "MATCH_CAMERA", "LEGALIZE")
+
+
+def has_alpha(pix_fmt: Optional[str]) -> bool:
+    return bool(pix_fmt) and bool(ALPHA_PIX_FMT_RE.match(str(pix_fmt)))
 
 
 @dataclass
@@ -188,6 +200,15 @@ class Executor:
             raise ColorError("INVALID_INPUT", f"source {project.source.source_id!r} has no video stream", {"source_id": project.source.source_id, "reason": "no_video_stream"})
 
         source_ext = resolved_source.suffix.lower()
+        if source["alpha"]:
+            # ffmpeg-skill/color writes H.264 4:2:0 (or ProRes 422) for every re-encoding mode: the alpha plane would be
+            # dropped without a word. Refused before anything runs; nothing here can keep it (ADR-25)
+            lossy = sorted(op.op_id for op in project.operations if op.type in REENCODING_OPERATIONS)
+            if lossy:
+                raise ColorError("UNSUPPORTED_FORMAT", f"source {project.source.source_id!r} has an alpha channel ({source['pix_fmt']}); operation(s) {lossy} "
+                                 "re-encode through ffmpeg-skill/color, which writes no alpha, so the alpha would be lost. Grade the fill without its "
+                                 "alpha deliberately (e.g. export it first), or wait for an alpha-preserving ffmpeg-skill path",
+                                 {"reason": "alpha_not_preserved", "pix_fmt": source["pix_fmt"], "op_ids": lossy})
 
         input_paths = {str(resolved_source)}
         outputs: Dict[str, Path] = {}
@@ -331,7 +352,7 @@ class Executor:
                 "has_video": bool(video), "has_audio": bool(meta.get("audio")), "width": video.get("width"), "height": video.get("height"),
                 "pix_fmt": video.get("pix_fmt"), "codec": video.get("codec"), "color_space": video.get("color_space"),
                 "color_primaries": video.get("color_primaries"), "color_transfer": video.get("color_transfer"), "color_range": video.get("color_range"),
-                "hdr": probe_hdr(video), "dolby_vision": bool(video.get("dolby_vision")),
+                "hdr": probe_hdr(video), "dolby_vision": bool(video.get("dolby_vision")), "alpha": has_alpha(video.get("pix_fmt")),
                 "subtitle_streams": int(meta.get("subtitle_streams") or 0), "data_streams": int(meta.get("data_streams") or 0)}
 
     @staticmethod
@@ -638,6 +659,9 @@ class Executor:
         if source["width"] and width != source["width"] or source["height"] and height != source["height"]:
             raise ColorError("VALIDATION_ERROR", f"{what}: output resolution {width}x{height} differs from the source's {source['width']}x{source['height']}",
                              {"reason": "resolution_mismatch", "path": str(path)})
+        if source.get("alpha") and not has_alpha(video.get("pix_fmt")):
+            raise ColorError("VALIDATION_ERROR", f"{what}: the source's alpha channel ({source.get('pix_fmt')}) is gone from the output ({video.get('pix_fmt')})",
+                             {"reason": "alpha_lost", "path": str(path), "source_pix_fmt": source.get("pix_fmt"), "pix_fmt": video.get("pix_fmt")})
         hdr, dolby_vision = probe_hdr(video), bool(video.get("dolby_vision"))
         if st.node.type == "HDR_TO_SDR" and hdr:
             raise ColorError("VALIDATION_ERROR", f"{what}: output is still tagged HDR (transfer={video.get('color_transfer')}, primaries={video.get('color_primaries')}) after tone mapping",

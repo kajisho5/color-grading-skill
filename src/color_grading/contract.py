@@ -10,7 +10,7 @@ from . import CONTRACT_SCHEMA_VERSION, DOCTOR_SCHEMA_VERSION, PACKAGE_NAME, REQU
 from .adapter import FLAG_ALTERNATIVES, FLAGS_USED, KNOWN_CONTRACT_VERSION, KNOWN_CONTRACT_VERSIONS, OPTIONAL_TOOL_FLAGS, REQUIRED_FLAGS, REQUIRED_TOOLS, TOOLS_USED
 from .errors import ERROR_CODES, ERROR_TABLE, EXIT_CODES
 from . import ocio as ocio_mod
-from .executor import DURATION_TOLERANCE, TOOL_FOR, WORK_DIR_NAME
+from .executor import ALPHA_PIX_FMT_RE, DURATION_TOLERANCE, REENCODING_OPERATIONS, TOOL_FOR, WORK_DIR_NAME
 from .model import (CUBE_EXTENSIONS, FORBIDDEN_KEYS, ID_RE, MAX_LUT_BYTES, MAX_OPERATIONS, OPERATION_TYPES, OUTPUT_FORMATS, REF_RE,
                     OPERATION_ALIASES, REQUEST_SCHEMA_ID, RETAG_TAGS, RETAG_TARGETS, TONEMAPS, UNSUPPORTED_OPERATIONS, X264_PRESETS)
 
@@ -131,6 +131,10 @@ def skill_contract() -> Dict[str, Any]:
         "hdr_sdr": {"tonemap_curves": list(TONEMAPS), "peak_nits_range": [1.0, 10000.0], "desat_range": [0.0, 5.0],
                     "tone_mapping_selection": "always an explicit typed parameter (tonemap curve, peak, desat) from the caller; this skill never picks one automatically",
                     "hdr_detection": "measured via ffmpeg-skill/probe (bt2020_or_hdr, or hdr before 2.0: color_transfer/color_primaries); HDR_TO_SDR refuses a non-HDR source unless force is set"},
+        "alpha": {"preserved_by": ["RETAG", "STRIP_DOVI"], "refused_for": list(REENCODING_OPERATIONS), "pix_fmt_pattern": ALPHA_PIX_FMT_RE.pattern,
+                  "policy": "a source with an alpha plane is refused (UNSUPPORTED_FORMAT, reason alpha_not_preserved) for every operation that re-encodes "
+                            "through ffmpeg-skill/color, which writes no alpha; a stream copy keeps it and an output without it fails validation (alpha_lost). "
+                            "Premultiplied / straight alpha handling is not implemented (docs/decisions.md ADR-25)"},
         "x264": {"crf_range": [0, 51], "presets": list(X264_PRESETS)},
         "geometry": {"changes": "no implemented operation changes duration or frame geometry", "duration_tolerance": DURATION_TOLERANCE,
                     "work_dir": f"<workspace>/{WORK_DIR_NAME}/<project_id>/"},
