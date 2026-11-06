@@ -46,10 +46,13 @@ TOOL_FOR: Dict[str, Tuple[str, List[str]]] = {
                                      "filter:curves", "encoder:libx264"]),
     # baked by PyOpenColorIO (a Python capability of this skill, not of ffmpeg-skill), applied by color --lut, tagged by
     # color --retag when the --lut output does not already carry the destination's tags (ADR-22)
-    "OCIO_TRANSFORM": ("color", [ocio_mod.CAPABILITY, "filter:lut3d", "encoder:libx264"]),
+    "OCIO_TRANSFORM": ("color", [ocio_mod.CAPABILITY, "ffmpeg-skill/color:retag-h264-vui", "filter:lut3d", "encoder:libx264"]),
 }
 # capabilities this skill provides itself (Python modules), not detected through ffmpeg-skill's doctor
 PYTHON_CAPABILITIES = (ocio_mod.CAPABILITY,)
+# capabilities read from the located ffmpeg-skill's contract by the adapter (SkillInfo.features), not from its doctor:
+# capability -> feature key
+CHECKOUT_CAPABILITIES = {"ffmpeg-skill/color:retag-h264-vui": "retag_rewrites_h264_tags"}
 
 
 @dataclass
@@ -228,10 +231,14 @@ class Executor:
                 raise
             b = baked[f"op:{op.op_id}"]
             info = getattr(self.skill, "_info", None)
-            if op.parameters["output_tags"] != "bt709" and info is not None and info.features.get("retag_rewrites_h264_tags") is False:
-                raise ColorError("TOOL_ERROR", f"operation {op.op_id!r}: destination tags {op.parameters['output_tags']!r} need ffmpeg-skill/color --retag to rewrite "
-                                 "an H.264 stream's colour description (bsf:h264_metadata), which this ffmpeg-skill does not declare; its --lut output "
-                                 "would stay tagged BT.709", {"op_id": op.op_id, "reason": "retag_cannot_rewrite_tags", "ffmpeg_skill": info.version}, retryable=False)
+            if info is not None and info.features.get("retag_rewrites_h264_tags") is False:
+                # neither step can guarantee the destination's tags on this checkout (0.12.3): its --lut output's tags
+                # depend on the FFmpeg build (all three BT.709 on 6.1, only the matrix on 8.0) and its --retag only writes a
+                # container hint that a tagged H.264 stream overrides. Refused before anything is encoded (ADR-22)
+                raise ColorError("TOOL_ERROR", f"operation {op.op_id!r}: OCIO_TRANSFORM needs ffmpeg-skill/color --retag to rewrite an H.264 stream's "
+                                 "colour description (bsf:h264_metadata), which this ffmpeg-skill does not declare, so the destination's colour tags "
+                                 f"({op.parameters['output_tags']}) cannot be guaranteed; update ffmpeg-skill", {"op_id": op.op_id, "reason": "retag_cannot_rewrite_tags",
+                                 "ffmpeg_skill": info.version}, retryable=False)
             overrides[f"op:{op.op_id}"] = {"config": b.config["sha256"], "lut_sha256": b.sha256}
         identities = graph.identities(source["sha256"], self.tool_versions, overrides)
         states: Dict[str, NodeState] = {}

@@ -122,13 +122,13 @@ def test_names_are_checked_against_the_config(field, value):
 
 def test_doctor_reports_ocio_missing_without_breaking_the_other_operations(skill_dir, monkeypatch):
     with_ocio = doctor_report(str(skill_dir))
-    assert with_ocio["checks"]["ocio"]["status"] == "ok" and with_ocio["checks"]["operations"]["OCIO_TRANSFORM"]["status"] != "unsupported"
+    assert with_ocio["checks"]["ocio"]["status"] == "ok" and ocio.CAPABILITY not in with_ocio["checks"]["operations"]["OCIO_TRANSFORM"]["missing"]
     monkeypatch.setitem(sys.modules, "PyOpenColorIO", None)     # import now raises ImportError
     d = doctor_report(str(skill_dir))
     assert d["checks"]["ocio"]["status"] == "missing" and "pip install" in d["checks"]["ocio"]["install"]
     assert d["checks"]["capabilities"][ocio.CAPABILITY] == "unsupported"
     assert d["checks"]["operations"]["OCIO_TRANSFORM"]["status"] == "unsupported"
-    assert d["checks"]["operations"]["OCIO_TRANSFORM"]["missing"] == [ocio.CAPABILITY]
+    assert d["checks"]["operations"]["OCIO_TRANSFORM"]["missing"] == [ocio.CAPABILITY] + with_ocio["checks"]["operations"]["OCIO_TRANSFORM"]["missing"]
     assert "OCIO_TRANSFORM" in d["unavailable_operations"] and d["status"] != "fail"
     others = {t: o["status"] for t, o in d["checks"]["operations"].items() if t != "OCIO_TRANSFORM"}
     assert others == {t: o["status"] for t, o in with_ocio["checks"]["operations"].items() if t != "OCIO_TRANSFORM"}
@@ -177,6 +177,18 @@ def _avg_rgb(path, matrix="bt709"):
     return [v / 65535 for v in struct.unpack("<3H", out[:6])]
 
 
+def _refused_here(skill_dir, code, d, workspace):
+    """On an ffmpeg-skill whose --retag cannot rewrite an H.264 colour description (0.12.3), OCIO_TRANSFORM is refused
+    at planning for every destination (ADR-22): asserted here, and True so the caller stops."""
+    from color_grading.adapter import FfmpegSkill
+    if FfmpegSkill.locate(str(skill_dir)).info().features["retag_rewrites_h264_tags"] is not False:
+        return False
+    assert code != 0 and d["error"]["code"] == "TOOL_ERROR" and d["error"]["details"]["reason"] == "retag_cannot_rewrite_tags", d
+    assert not (workspace / "out").exists() or not any((workspace / "out").iterdir())
+    assert not list((workspace / ".color-grading").rglob("*.mp4")) if (workspace / ".color-grading").exists() else True
+    return True
+
+
 def _lut_apply_avg(workspace, cube_name, project_id, matrix):
     code, d = _run(request_doc([{"op_id": "l", "type": "LUT_APPLY", "input": "source", "parameters": {"lut_path": cube_name}}], project_id=project_id,
                                outputs=[{"output_id": "main", "operation": "op:l", "path": f"out/{project_id}.mp4", "format": "mp4"}]))
@@ -187,6 +199,8 @@ def _lut_apply_avg(workspace, cube_name, project_id, matrix):
 def test_rec709_destination_matches_the_processor_and_keeps_bt709_tags(workspace, skill_dir):
     view = _view(REC709, "SDR", "Rec.709")
     code, d = _run(request_doc([_op(source_space="S-Log3 S-Gamut3.Cine", display=REC709, view=view)]))
+    if _refused_here(skill_dir, code, d, workspace):
+        return
     assert code == 0 and d["ok"], d.get("error")
     r = next(x for x in d["results"] if x["type"] == "OCIO_TRANSFORM")
     art = r["artifact"]
@@ -213,13 +227,9 @@ def test_rec709_destination_matches_the_processor_and_keeps_bt709_tags(workspace
 
 
 def test_pq_destination_is_retagged_and_reused_on_rerun(workspace, skill_dir):
-    from color_grading.adapter import FfmpegSkill
     doc = request_doc([_op(source_space="ARRI LogC4", display=PQ, view=_view(PQ, "HDR", "1000"), lut_size=33)])
     code, d = _run(doc)
-    if FfmpegSkill.locate(str(skill_dir)).info().features["retag_rewrites_h264_tags"] is False:
-        # an ffmpeg-skill whose --retag cannot rewrite an H.264 colour description (0.12.3): refused before encoding
-        assert code != 0 and d["error"]["code"] == "TOOL_ERROR" and d["error"]["details"]["reason"] == "retag_cannot_rewrite_tags"
-        assert not (workspace / "out" / "main.mp4").exists()
+    if _refused_here(skill_dir, code, d, workspace):
         return
     assert code == 0 and d["ok"], d.get("error")
     r = next(x for x in d["results"] if x["type"] == "OCIO_TRANSFORM")
@@ -231,19 +241,24 @@ def test_pq_destination_is_retagged_and_reused_on_rerun(workspace, skill_dir):
     assert code == 0 and r2["status"] == "reused" and r2["artifact"]["sha256"] == art["sha256"] and r2["retagged"] is True
 
 
-def test_config_file_is_hashed_and_resolved_through_the_lut_policy(workspace):
+def test_config_file_is_hashed_and_resolved_through_the_lut_policy(workspace, skill_dir):
     (workspace / "studio.ocio").write_text(_cfg().serialize(), encoding="utf-8")
+    code, d = _run(request_doc([_op(config="missing.ocio", source_space="ACEScct", destination_space="Gamma 2.4 Encoded Rec.709")]))
+    assert code != 0 and d["error"]["code"] == "INVALID_INPUT"
     code, d = _run(request_doc([_op(config="studio.ocio", source_space="ACEScct", destination_space="Gamma 2.4 Encoded Rec.709", lut_size=17)]))
+    if _refused_here(skill_dir, code, d, workspace):
+        return
     assert code == 0 and d["ok"], d.get("error")
     prov = next(e for e in d["outputs"][0]["provenance"]["operations"] if e["type"] == "OCIO_TRANSFORM")["ocio"]
     assert prov["config"]["kind"] == "file" and prov["config"]["file_sha256"] and prov["config"]["path"].endswith("studio.ocio")
-    code, d = _run(request_doc([_op(config="missing.ocio", source_space="ACEScct", destination_space="Gamma 2.4 Encoded Rec.709")]))
-    assert code != 0 and d["error"]["code"] == "INVALID_INPUT"
 
 
-def test_dry_run_bakes_nothing_to_disk(workspace):
+def test_dry_run_bakes_nothing_to_disk(workspace, skill_dir):
     code, out, _ = run_cli(["plan", "-", "--json"], json.dumps(request_doc([_op(source_space="ACEScct", display=REC709, view=_view(REC709, "SDR", "Rec.709"), lut_size=17)])))
     d = one_json(out)
+    if _refused_here(skill_dir, code, d, workspace):
+        assert not (workspace / ".color-grading").exists()
+        return
     assert code == 0 and d["ok"] and d["dry_run"]
     step = d["plan"]["steps"][0]
     assert step["ocio"]["lut_size"] == 17 and step["lut"]["path"].endswith(".cube")

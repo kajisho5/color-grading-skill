@@ -293,8 +293,12 @@
     (ADR-19 gates only on flags): (1) `--retag` rewrites an H.264 stream's own colour description only where the
     checkout declares `bsf:h264_metadata` (from 1.x; 0.12.3 only writes the container hint, which ffprobe does not
     report over the stream's VUI). The adapter reads that capability from the contract
-    (`detected.retag_rewrites_h264_tags`); where it is `false`, a non-BT.709 destination is refused at planning
-    (`retag_cannot_rewrite_tags`) instead of encoding a file that would fail validation. (2) Before ffmpeg-skill
+    (`detected.retag_rewrites_h264_tags`, capability `ffmpeg-skill/color:retag-h264-vui`). On such a checkout no
+    destination's tags can be guaranteed: its `--lut` output is tagged by the FFmpeg build (all three BT.709 with
+    FFmpeg 6.1, only the matrix with 8.0, measured in CI) and its `--retag` cannot repair that. So `OCIO_TRANSFORM` is
+    unsupported there: `doctor` lists the capability as missing, and a run (or a plan) is refused before anything is
+    encoded (`TOOL_ERROR`, `retag_cannot_rewrite_tags`) instead of writing a file that fails validation or, worse,
+    one tagged by chance. Every other operation is unaffected. (2) Before ffmpeg-skill
     3.1.6, `--lut` converts to RGB with BT.709 and back with BT.601 (its #410): every LUT, a baked one included,
     lands on shifted colours. `doctor` warns for such a version; CI's main jobs run ffmpeg-skill main.
   - *Licences.* PyOpenColorIO is BSD-3-Clause (the wheel's LICENSE, "Copyright Contributors to the OpenColorIO

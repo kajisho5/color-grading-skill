@@ -12,13 +12,13 @@ from . import DOCTOR_SCHEMA_VERSION, SKILL_ID, VERSION
 from .adapter import FfmpegSkill
 from .errors import ColorError
 from . import ocio as ocio_mod
-from .executor import PYTHON_CAPABILITIES, TOOL_FOR
+from .executor import CHECKOUT_CAPABILITIES, PYTHON_CAPABILITIES, TOOL_FOR
 from .model import OPERATION_TYPES, OUTPUT_FORMATS, UNSUPPORTED_OPERATIONS
 from .security import PathPolicy
 
 DOCTOR_SCHEMA_ID = f"{SKILL_ID}/doctor@{DOCTOR_SCHEMA_VERSION}"
 # capabilities used across the implemented operations, beyond the base ffmpeg/ffprobe pair
-ALL_CAPABILITIES = sorted({c for _, extra in TOOL_FOR.values() for c in extra if c not in PYTHON_CAPABILITIES})
+ALL_CAPABILITIES = sorted({c for _, extra in TOOL_FOR.values() for c in extra if c not in PYTHON_CAPABILITIES and c not in CHECKOUT_CAPABILITIES})
 
 
 # ffmpeg-skill release whose --lut converts to RGB and back with one matrix (its #410). Reported as a warning, never
@@ -63,6 +63,9 @@ def capability_status(skill_info: Optional[Any], ffdoc: Dict[str, Any]) -> Dict[
     status: Dict[str, str] = dict(python_capabilities())
     have_skill = skill_info is not None and skill_info.supported
     status["ffmpeg-skill"] = "supported" if have_skill else "unsupported"
+    features = getattr(skill_info, "features", None) or {}
+    for cap, key in CHECKOUT_CAPABILITIES.items():
+        status[cap] = "unsupported" if not have_skill else {True: "supported", False: "unsupported"}.get(features.get(key), "unknown")
     if have_skill and ffdoc.get("_unavailable"):
         # this ffmpeg-skill has no doctor to ask: nothing detected either way; the tool run reports the truth
         for cap in ["ffmpeg", "ffprobe", *ALL_CAPABILITIES]:
