@@ -1,0 +1,266 @@
+{
+ "color_space": {
+  "measured_fields": [
+   "color_space",
+   "color_primaries",
+   "color_transfer",
+   "color_range",
+   "pix_fmt",
+   "hdr",
+   "dolby_vision"
+  ],
+  "note": "measurement of input/output colour information is kept separate from the RETAG / HDR_TO_SDR operations that change it (STEP 4 of the design brief)",
+  "retag_tags": {
+   "bt2020-hlg": [
+    "bt2020nc",
+    "bt2020",
+    "arib-std-b67"
+   ],
+   "bt2020-pq": [
+    "bt2020nc",
+    "bt2020",
+    "smpte2084"
+   ],
+   "bt601": [
+    "smpte170m",
+    "smpte170m",
+    "smpte170m"
+   ],
+   "bt709": [
+    "bt709",
+    "bt709",
+    "bt709"
+   ]
+  },
+  "retag_targets": [
+   "bt709",
+   "bt2020-pq",
+   "bt2020-hlg",
+   "bt601"
+  ],
+  "source": "ffmpeg-skill/probe (ffprobe); OBSERVED, never inferred"
+ },
+ "errors": {
+  "codes": [
+   "INVALID_REQUEST",
+   "INVALID_INPUT",
+   "PATH_NOT_ALLOWED",
+   "UNSUPPORTED_OPERATION",
+   "UNSUPPORTED_FORMAT",
+   "INVALID_TIME_RANGE",
+   "DEPENDENCY_ERROR",
+   "MISSING_INPUT",
+   "OUTPUT_ERROR",
+   "VALIDATION_ERROR",
+   "TOOL_ERROR",
+   "CANCELLED",
+   "INTERNAL_ERROR"
+  ],
+  "exit_codes": {
+   "CANCELLED": 13,
+   "DEPENDENCY_ERROR": 8,
+   "INTERNAL_ERROR": 14,
+   "INVALID_INPUT": 3,
+   "INVALID_REQUEST": 2,
+   "INVALID_TIME_RANGE": 7,
+   "MISSING_INPUT": 9,
+   "OUTPUT_ERROR": 10,
+   "PATH_NOT_ALLOWED": 4,
+   "TOOL_ERROR": 12,
+   "UNSUPPORTED_FORMAT": 6,
+   "UNSUPPORTED_OPERATION": 5,
+   "VALIDATION_ERROR": 11
+  },
+  "retryable": {
+   "CANCELLED": true,
+   "DEPENDENCY_ERROR": false,
+   "INTERNAL_ERROR": false,
+   "INVALID_INPUT": false,
+   "INVALID_REQUEST": false,
+   "INVALID_TIME_RANGE": false,
+   "MISSING_INPUT": false,
+   "OUTPUT_ERROR": false,
+   "PATH_NOT_ALLOWED": false,
+   "TOOL_ERROR": true,
+   "UNSUPPORTED_FORMAT": false,
+   "UNSUPPORTED_OPERATION": false,
+   "VALIDATION_ERROR": false
+  },
+  "success_exit_code": 0
+ },
+ "execution": {
+  "ai": false,
+  "arbitrary_executables": false,
+  "arbitrary_filters": false,
+  "canonical_invocation": [
+   "color-grading",
+   "run",
+   "-",
+   "--json"
+  ],
+  "executable_resolution": "ffmpeg-skill directory: --ffmpeg-skill, COLOR_GRADING_FFMPEG_SKILL_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR, ~/.claude/skills/ffmpeg-skill, ./vendor/ffmpeg-skill, ../ffmpeg-skill; ffmpeg/ffprobe: PATH lookup by ffmpeg-skill",
+  "executables": [
+   "python3 <ffmpeg-skill>/scripts/{probe,color}.py (argv lists)"
+  ],
+  "input_mutation": false,
+  "mode": "local",
+  "network": false,
+  "shell": false,
+  "stderr": "diagnostics only",
+  "stdin": "color-grading/request@1",
+  "stdout": "exactly one color-grading/response@1 document"
+ },
+ "hdr_sdr": {
+  "desat_range": [
+   0.0,
+   5.0
+  ],
+  "hdr_detection": "measured via ffmpeg-skill/probe (bt2020_or_hdr, or hdr before 2.0: color_transfer/color_primaries); HDR_TO_SDR refuses a non-HDR source unless force is set",
+  "peak_nits_range": [
+   1.0,
+   10000.0
+  ],
+  "tone_mapping_selection": "always an explicit typed parameter (tonemap curve, peak, desat) from the caller; this skill never picks one automatically",
+  "tonemap_curves": [
+   "hable",
+   "mobius",
+   "reinhard",
+   "bt2390",
+   "clip",
+   "linear",
+   "gamma"
+  ]
+ },
+ "kind": "execution",
+ "lut": {
+  "extensions": [
+   ".cube"
+  ],
+  "format": "cube",
+  "hashed": "sha256, recorded in provenance",
+  "max_bytes": 209715200,
+  "note": "a LUT is data read by ffmpeg's lut3d filter, never a filter string or executable; path policy applies (allowed_lut_roots)",
+  "strength_range": [
+   0.0,
+   1.0
+  ]
+ },
+ "provenance": {
+  "identity": "sha256 over canonical JSON of {type, parameters, input identity, tool versions}; a LUT_APPLY identity uses the LUT's sha256, not its path; the source's identity is its file sha256; no timestamps, no UUIDs",
+  "per_operation": [
+   "operation_id",
+   "type",
+   "tool",
+   "tool_versions",
+   "parameters",
+   "input_hash",
+   "output_hash",
+   "status",
+   "measurements",
+   "tool_commands_observed",
+   "lut (LUT_APPLY only)"
+  ],
+  "per_output": [
+   "skill",
+   "skill_version",
+   "tool_versions",
+   "output_hash",
+   "operations (chain)",
+   "source (sha256)"
+  ]
+ },
+ "request": {
+  "forbidden_fields": [
+   "af",
+   "api_key",
+   "args",
+   "argv",
+   "cmd",
+   "command",
+   "commands",
+   "cwd",
+   "env",
+   "exec",
+   "executable",
+   "ffmpeg",
+   "filter",
+   "filter_complex",
+   "filters",
+   "script",
+   "shell",
+   "vf",
+   "workspace"
+  ],
+  "id_pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+  "max_operations": 200,
+  "reference_pattern": "^(source|op:([A-Za-z0-9][A-Za-z0-9._-]{0,63}))$",
+  "schema": "color-grading/request@1",
+  "shape": {
+   "options?": {
+    "reuse_intermediates?": true,
+    "timeout?": 600
+   },
+   "project": {
+    "operations": [
+     {
+      "input": "source|op:<id>",
+      "op_id": "id",
+      "parameters": {},
+      "type": "HDR_TO_SDR|LUT_APPLY|RETAG|STRIP_DOVI|PRIMARY_CORRECTION"
+     }
+    ],
+    "outputs": [
+     {
+      "expect?": {
+       "duration?": 0,
+       "duration_tolerance?": 0.2,
+       "height?": 1080,
+       "pix_fmt?": "yuv420p",
+       "width?": 1920
+      },
+      "format": "mp4|mov|m4v|mkv",
+      "operation": "source|op:<id>",
+      "output_id": "id",
+      "overwrite?": false,
+      "path": "file"
+     }
+    ],
+    "project_id": "id",
+    "source": {
+     "path": "file",
+     "source_id": "id"
+    }
+   },
+   "schema": "color-grading/request@1"
+  }
+ },
+ "response": {
+  "failure": {
+   "error": {
+    "code": "one of errors.codes",
+    "details": {},
+    "message": "str",
+    "retryable": "bool"
+   },
+   "ok": false,
+   "status": "error|cancelled"
+  },
+  "schema": "color-grading/response@1",
+  "success": {
+   "dry_run": "bool",
+   "ok": true,
+   "outputs": "[output artifact + provenance]",
+   "plan": "...",
+   "results": "[OperationResult]",
+   "status": "ok"
+  }
+ },
+ "schema": "color-grading/contract@1",
+ "schema_versions": {
+  "contract": "1",
+  "doctor": "1",
+  "request": "1",
+  "response": "1"
+ },
+ "skill_id": "color-grading"
+}

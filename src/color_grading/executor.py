@@ -29,7 +29,7 @@ from .graph import Node, OperationGraph
 from . import legalize as legalize_mod
 from . import match as match_mod
 from . import ocio as ocio_mod
-from .model import CUBE_EXTENSIONS, MAX_LUT_BYTES, OUTPUT_FORMATS, RETAG_TAGS, ColorRequest, parse_request
+from .model import CUBE_EXTENSIONS, MAX_LUT_BYTES, OUTPUT_FORMATS, RETAG_TAGS, ColorRequest, parse_patches, parse_request
 from .security import PathPolicy
 
 RESPONSE_SCHEMA_ID = f"{SKILL_ID}/response@{RESPONSE_SCHEMA_VERSION}"
@@ -534,7 +534,7 @@ class Executor:
         frames = self._match_frames_dir(st, work_dir)
         ref_png, ref = self._frame(str(st.reference.path), p["reference_at"], frames / "reference", timeout)
         in_png, inp = self._frame(str(upstream.artifact.path), p["at"], frames / "input", timeout)
-        ref_s, in_s, how = match_mod.samples(ref, inp, p["patches"])
+        ref_s, in_s, how = match_mod.samples(ref, inp, parse_patches(p["patches"]) if p["patches"] else None)
         f = match_mod.fit(p["model"], ref_s, in_s)
         text = ocio_mod.cube_text(match_mod.lut_values(f, p["lut_size"]), p["lut_size"], title="color-grading MATCH_CAMERA")
         data = text.encode("utf-8")
@@ -555,7 +555,7 @@ class Executor:
         frames = self._match_frames_dir(st, work_dir)
         ref = match_mod.read_png(Path(st.measurements["frames"]["reference"]["path"]).read_bytes())   # the frame the fit used
         out_png, out = self._frame(str(out_path), p["at"], frames / "output", timeout)
-        ref_s, out_s, _ = match_mod.samples(ref, out, p["patches"])
+        ref_s, out_s, _ = match_mod.samples(ref, out, parse_patches(p["patches"]) if p["patches"] else None)
         st.measurements["frames"]["output"] = {"path": str(out_png), "sha256": sha256_file(str(out_png)), "at": p["at"]}
         st.measurements["delta_e2000"]["after"] = match_mod.residual(ref_s, out_s)
 
