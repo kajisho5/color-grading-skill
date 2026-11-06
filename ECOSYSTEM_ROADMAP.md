@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-v0.4.0, Python. HDR_TO_SDR, LUT_APPLY, RETAG, STRIP_DOVI, PRIMARY_CORRECTION (exposure ... curves), OCIO_TRANSFORM (step 5), MATCH_CAMERA (step 6). 170 tests, CI on 3 OSes, release workflow.
+v0.4.0, Python. HDR_TO_SDR, LUT_APPLY, RETAG, STRIP_DOVI, PRIMARY_CORRECTION (exposure ... curves), OCIO_TRANSFORM (step 5), MATCH_CAMERA (step 6), LEGALIZE (step 7, without the shares report). 170 tests, CI on 3 OSes, release workflow.
 
 ## What this repository owns
 
@@ -42,6 +42,7 @@ Agent wires 5 color_* skills through color-grading/run, every PRIMARY_CORRECTION
 - [ ] **7. Broadcast legal range and gamut** — LEGALIZE: soft-clip to BT.709 legal levels (8-bit 16-235 / 10-bit 64-940, chroma limits) and report the share of pixels out of range before and after; the limits follow EBU R103 when that profile is asked for
   - なぜ要るか：放送局への納品で、レベル外の信号で差し戻されない
   - Done when: a fixture with super-whites ends within range and the report gives both shares
+  - Partly done (ADR-24), left unchecked: `LEGALIZE` (profiles `bt709` / `ebu-r103`, a soft-clip LUT over ffmpeg-skill's float RGB) brings the fixture's super-whites / sub-blacks from 12.2 % of luma samples out of 16–235 to 0, chroma 0 → 0 (measured by the test from the written file). **Not met: the report cannot give the shares**: ffmpeg-skill exposes no per-pixel range measurement and this skill runs no ffmpeg itself; provenance says `measured: false`. Needs an ffmpeg-skill legal-range measurement (proposal in ADR-24). Also measured: ffmpeg-skill's float-RGB leg clamps to 0..1 on the way back, so `ebu-r103`'s headroom is never written, and hard saturated edges overshoot chroma after 4:2:0 (testsrc2 ×1.3 chroma: 1.26 % left)
 - [ ] **8. Alpha-aware grading** — LUT_APPLY / PRIMARY_CORRECTION on a source with alpha keep the alpha unchanged, and a premultiplied source is un-premultiplied before the correction and premultiplied again after
   - なぜ要るか：テロップや CG の色を変えても、縁が黒ずんだり白く浮いたりしない
   - Done when: a premultiplied fixture's alpha is bit-identical after a LUT, and edge pixels have no dark fringe

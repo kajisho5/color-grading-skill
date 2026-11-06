@@ -36,6 +36,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import REQUEST_SCHEMA_VERSION, SKILL_ID
 from .errors import ColorError
+from .legalize import DEFAULT_KNEE as LEGAL_KNEE, DEFAULT_LUT_SIZE as LEGAL_LUT_SIZE, PROFILES as LEGAL_PROFILES
 from .match import MODELS as MATCH_MODELS
 from .ocio import BUILTIN_PREFIX, CONFIG_EXTENSIONS, DEFAULT_CONFIG, DEFAULT_LUT_SIZE, KNOWN_DESTINATION_TAGS, LUT_SIZES
 
@@ -150,6 +151,15 @@ OPERATION_TYPES: Dict[str, Dict[str, Any]] = {
         "output_tags": {"type": _STR, "required": False, "enum": list(RETAG_TARGETS), "default": None, "description": "colour tags the output must carry; "
                         "derived from a known destination (Rec.1886 Rec.709 -> bt709, Rec.2100-PQ -> bt2020-pq, Rec.2100-HLG -> bt2020-hlg), "
                         "required for any other destination"},
+        **_ENCODE_PARAMS, **_AUDIO_STREAM_PARAM}},
+    "LEGALIZE": {"description": "Soft-clip into broadcast-legal levels: BT.709 legal range (8-bit luma 16-235, chroma 16-240) or the EBU R 103 "
+                 "tolerance, as a 3D .cube LUT over float RGB (super-whites and sub-blacks included) applied by ffmpeg-skill/color --lut "
+                 "(docs/decisions.md ADR-24)", "parameters": {
+        "profile": {"type": _STR, "required": False, "enum": list(LEGAL_PROFILES), "default": "bt709", "description": "bt709: RGB 0..1 (luma 16-235, chroma 16-240); "
+                    "ebu-r103: EBU R 103 tolerance (RGB -5..105 %, luma -1..103 %)"},
+        "knee": {"type": _NUM, "required": False, "min": 0.8, "max": 0.99, "default": LEGAL_KNEE, "description": "where the highlight soft clip starts, as a "
+                 "fraction of the legal RGB span; values below it are unchanged"},
+        "lut_size": {"type": _INT, "required": False, "enum": [33, 65], "default": LEGAL_LUT_SIZE, "description": "edge length of the written 3D LUT"},
         **_ENCODE_PARAMS, **_AUDIO_STREAM_PARAM}},
     "MATCH_CAMERA": {"description": "Match this camera's colour to a reference camera from a frame pair of the same subject: frames extracted by "
                      "ffmpeg-skill/look, a correction fitted (per-channel curves or a 3x3 matrix + offset), written as a 3D .cube LUT and "
