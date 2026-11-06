@@ -16,7 +16,7 @@ media-analysis-skill            measures inputs for the agent (not colour-specif
 
 Responsibilities that are deliberately **absent** here: deciding which colour treatment, LUT, tonemap curve or
 correction values to apply; automatic "look" or LUT selection; looking at a frame and judging it "cinematic" or
-"washed out"; shot matching; automatic white balance (`WHITE_BALANCE` is only an alias of `PRIMARY_CORRECTION`'s explicit
+"washed out"; automatic shot matching (MATCH_CAMERA fits to a reference frame the caller names, ADR-23); automatic white balance (`WHITE_BALANCE` is only an alias of `PRIMARY_CORRECTION`'s explicit
 `temperature`/`tint`, resolved at validation, docs/decisions.md ADR-20); production planning;
 approvals; transcription; subtitles; QC; container/format conversion (that is ffmpeg-skill/export).
 

@@ -309,3 +309,44 @@
   - *Contract.* New operation and Capability id `color.ocio_transform` (EXPERIMENTAL), `optional_dependencies`
     (`ocio`), an `ocio` block; `dependencies` (ffmpeg-skill only, required) unchanged. Additive: a consumer pinned to
     the previous contract sees one operation more when it re-pins.
+- **ADR-23 `MATCH_CAMERA`: fit camera B to camera A from a frame pair, write the fit as a 3D LUT, measure the
+  residual ΔE2000 on the written file.** ECOSYSTEM_ROADMAP.md step 6. In a multicam edit the cameras' colour
+  differences show at every cut; matching them by hand per camera is slow and unrecorded.
+  - *Request.* The operation's input is camera B. `reference_path` (camera A, resolved through the *input* path
+    policy and identified by its sha256), `at` / `reference_at` (the two frame times, seconds), `model` (`curves`,
+    default, or `matrix`), optional `patches` (up to 64 `{reference: [x, y, w, h], input: [x, y, w, h]}` in
+    fractions of the frame), `lut_size` (17 / 33 / 65, default 33) and the encode parameters. The caller names the
+    frames and, optionally, the patches; nothing here looks for a matching shot (`not_provided` says so).
+  - *Who touches media.* ffmpeg-skill/look (`--at T --width 320 --no-timecode`) extracts the two frames as PNG; this
+    skill decodes them (`match.read_png`: 8/16-bit RGB(A), the five PNG filters), fits, writes the cube, and
+    ffmpeg-skill/color `--lut` applies it. After validation, look extracts the same frame of the written file and
+    the residual is measured on it, so `after` is what the encoded output achieved, not what the fit predicted
+    (`fit` is reported too). look is an optional tool of the adapter (`OPTIONAL_TOOL_FLAGS`): a checkout without
+    it, or without one of its flags, loses only MATCH_CAMERA (capability `ffmpeg-skill/look`).
+  - *Sampling.* Whole frame: the mean of every 8×8 block of the 320-px-wide analysis frame, both frames the same
+    size (`frame_size_mismatch` otherwise: different framing needs stated patches). Patches: the mean of each
+    rectangle, one in each frame, so the two cameras may frame the subject differently.
+  - *Models.* `curves`: per channel, the samples are binned (64 bins over the sampled range) and fitted
+    non-decreasing by pool-adjacent-violators; outside the sampled range the least-squares line continues the curve.
+    It corrects gain, offset, gamma and tone-curve differences per channel. `matrix`: least squares of a 3×3 matrix
+    plus offset (needs 4 distinct samples), which also corrects cross-channel mixing (a different camera gamut). A
+    free-form 3D LUT fit was not added: from one frame pair it would fit noise wherever samples are sparse.
+  - *Residual.* CIEDE2000 (Sharma, Wu & Dalal 2005, checked against their published test pairs) between
+    index-aligned samples, RGB read as BT.709 primaries with the BT.1886 EOTF (γ 2.4) and D65 as the matrix's own
+    white; mean, p95 and max, `before` (input vs reference), `fit` (predicted) and `after` (measured on the output).
+    Reported, never judged: no threshold fails the run.
+  - *Result on the fixture.* `camera_b` is `camera_a` (testsrc2) with R ×0.86, G ×0.97 + 10, B ×0.90 + 6 in 8-bit
+    RGB. Whole frame, curves: ΔE2000 mean 5.19 before, 0.50 after (p95 1.75); 9 patches, matrix: 4.81 → 0.25. The
+    test asserts before > 3 and after < 2 (the roadmap's "within ΔE 2 on average").
+  - *Needs ffmpeg-skill ≥ 3.1.6.* Before it, `--lut` reads RGB with BT.709 and writes back with BT.601 (its
+    #410), while look's frames show the BT.709 RGB, so the fit is not what `--lut` applies (measured on 0.12.3:
+    after 4.96, worse than before). This is behaviour without a flag, so it is read from the version: capability
+    `ffmpeg-skill/color:lut-bt709-legs` (`detected.lut_legs_bt709`; unknown when the version cannot be read).
+    Where it is false, MATCH_CAMERA is unsupported in doctor and refused at planning. OCIO_TRANSFORM keeps the
+    doctor warning only (ADR-22): its LUT is the exact transform of whatever RGB `--lut` sees, like LUT_APPLY's.
+  - *HDR input* is refused (`hdr_input`): the frames are display-referred SDR; run HDR_TO_SDR or OCIO_TRANSFORM first.
+  - *Identity and reuse.* The identity uses the reference's sha256 in place of its path; the cube, the frames and
+    the residuals are written at execution, kept in the work directory, and restored from the manifest on reuse.
+  - *Contract.* New operation and Capability id `color.match_camera` (EXPERIMENTAL); `dependencies[0].optional_tools`
+    (`ffmpeg-skill/look`); `ffmpeg_skill.flags_used.look`; "shot matching" in `not_provided` becomes "automatic shot
+    matching". Additive for a pinned consumer.

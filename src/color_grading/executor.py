@@ -26,6 +26,7 @@ from .adapter import FfmpegSkill, ToolRun, fmt_num, probe_hdr
 from .canonical import sha256_file, stable_hash
 from .errors import ColorError
 from .graph import Node, OperationGraph
+from . import match as match_mod
 from . import ocio as ocio_mod
 from .model import CUBE_EXTENSIONS, MAX_LUT_BYTES, OUTPUT_FORMATS, RETAG_TAGS, ColorRequest, parse_request
 from .security import PathPolicy
@@ -46,13 +47,16 @@ TOOL_FOR: Dict[str, Tuple[str, List[str]]] = {
                                      "filter:curves", "encoder:libx264"]),
     # baked by PyOpenColorIO (a Python capability of this skill, not of ffmpeg-skill), applied by color --lut, tagged by
     # color --retag when the --lut output does not already carry the destination's tags (ADR-22)
+    # frames by ffmpeg-skill/look, the fit computed here (match.py), the LUT applied by color --lut (ADR-23)
+    "MATCH_CAMERA": ("color", ["ffmpeg-skill/look", "ffmpeg-skill/color:lut-bt709-legs", "filter:lut3d", "encoder:libx264"]),
     "OCIO_TRANSFORM": ("color", [ocio_mod.CAPABILITY, "ffmpeg-skill/color:retag-h264-vui", "filter:lut3d", "encoder:libx264"]),
 }
 # capabilities this skill provides itself (Python modules), not detected through ffmpeg-skill's doctor
 PYTHON_CAPABILITIES = (ocio_mod.CAPABILITY,)
 # capabilities read from the located ffmpeg-skill's contract by the adapter (SkillInfo.features), not from its doctor:
 # capability -> feature key
-CHECKOUT_CAPABILITIES = {"ffmpeg-skill/color:retag-h264-vui": "retag_rewrites_h264_tags"}
+CHECKOUT_CAPABILITIES = {"ffmpeg-skill/color:retag-h264-vui": "retag_rewrites_h264_tags", "ffmpeg-skill/look": "look_tool",
+                         "ffmpeg-skill/color:lut-bt709-legs": "lut_legs_bt709"}
 
 
 @dataclass
@@ -106,6 +110,7 @@ class NodeState:
     error: Optional[Dict[str, Any]] = None
     input_hash: Optional[str] = None
     ocio: Optional[Any] = None                     # ocio.BakedLut (OCIO_TRANSFORM only)
+    reference: Optional[LutInfo] = None            # MATCH_CAMERA: the reference video (path, size, sha256)
     retagged: Optional[bool] = None                # OCIO_TRANSFORM: whether a --retag pass was needed for the destination's tags
 
     def to_dict(self) -> Dict[str, Any]:
@@ -118,6 +123,8 @@ class NodeState:
             d["lut"] = self.lut.to_dict()
         if self.ocio is not None:
             d["ocio"] = self.ocio.provenance()
+        if self.reference is not None:
+            d["reference"] = self.reference.to_dict()
         if self.retagged is not None:
             d["retagged"] = self.retagged
         d["tool_commands_observed"] = list(self.tool_commands)
@@ -240,6 +247,16 @@ class Executor:
                                  f"({op.parameters['output_tags']}) cannot be guaranteed; update ffmpeg-skill", {"op_id": op.op_id, "reason": "retag_cannot_rewrite_tags",
                                  "ffmpeg_skill": info.version}, retryable=False)
             overrides[f"op:{op.op_id}"] = {"config": b.config["sha256"], "lut_sha256": b.sha256}
+        # MATCH_CAMERA: the reference video is an input like the source (input PathPolicy), identified by its content
+        references: Dict[str, LutInfo] = {}
+        for op in project.operations:
+            if op.type != "MATCH_CAMERA":
+                continue
+            ref = self.policy.resolve_input(op.parameters["reference_path"], f"operation {op.op_id!r} reference_path")
+            references[f"op:{op.op_id}"] = LutInfo(ref, ref.stat().st_size, sha256_file(str(ref)))
+            overrides[f"op:{op.op_id}"] = {"reference_path": references[f"op:{op.op_id}"].sha256}
+            if any(str(t) == str(ref) for t in outputs.values()):
+                raise ColorError("OUTPUT_ERROR", f"an output would overwrite the reference of operation {op.op_id!r}", {"reason": "input_output_collision", "path": str(ref)})
         identities = graph.identities(source["sha256"], self.tool_versions, overrides)
         states: Dict[str, NodeState] = {}
         for n in graph.order:
@@ -248,6 +265,9 @@ class Executor:
             st.tool, st.capabilities = self._select_tool(node)
             if n in luts:
                 st.lut = luts[n]
+            if n in references:
+                st.reference = references[n]
+                st.lut = LutInfo(work_dir / f"{st.identity[:16]}.cube", 0, "")    # written at execution, from the fitted frames
             if n in baked:
                 st.ocio = baked[n]
                 st.lut = LutInfo(work_dir / f"{st.identity[:16]}.cube", len(baked[n].text.encode("utf-8")), baked[n].sha256)
@@ -365,7 +385,7 @@ class Executor:
                 args.append("--force")
             args += ["--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], "-o", o]
             return args
-        if node.type == "OCIO_TRANSFORM":
+        if node.type in ("OCIO_TRANSFORM", "MATCH_CAMERA"):
             assert st.lut is not None
             args = [src, "--lut", self._lut_arg(st.lut.path)]
             if hdr_input:
@@ -437,6 +457,8 @@ class Executor:
             if st.ocio is not None:
                 self._write_baked_lut(st)
             hdr_input = bool(upstream.artifact.hdr) if upstream.artifact else False
+            if node.type == "MATCH_CAMERA":
+                self._fit_match(st, upstream, work_dir, timeout)
             argv = self._argv(st, self._artifact_path(upstream), graded, hdr_input)
             # LUT_APPLY runs with cwd at the LUT's own directory so --lut can be a bare file name (see _lut_arg):
             # no drive letter, no colon, regardless of what drive the LUT/workspace/ffmpeg-skill checkout are on
@@ -446,6 +468,8 @@ class Executor:
             if node.type == "OCIO_TRANSFORM":
                 self._tag_destination(st, graded, out_path, timeout)
             st.artifact = self._validate_artifact(out_path, st, source)
+            if node.type == "MATCH_CAMERA":
+                self._match_residual(st, out_path, work_dir, timeout)
         except ColorError:
             self._remove_partial(out_path)
             if graded != out_path:
@@ -482,6 +506,48 @@ class Executor:
         os.replace(str(tmp), str(path))
         if sha256_file(str(path)) != st.ocio.sha256:
             raise ColorError("INTERNAL_ERROR", "baked LUT on disk does not match its hash", {"path": str(path)})
+
+    def _match_frames_dir(self, st: NodeState, work_dir: Path) -> Path:
+        return work_dir / f"{st.identity[:16]}.match"
+
+    def _frame(self, video: str, at: float, base: Path, timeout: Optional[float]) -> Any:
+        path = self.skill.look_frame(video, at, base, match_mod.ANALYSIS_WIDTH, timeout)
+        return path, match_mod.read_png(path.read_bytes())
+
+    def _fit_match(self, st: NodeState, upstream: NodeState, work_dir: Path, timeout: Optional[float]) -> None:
+        """MATCH_CAMERA, before --lut: the reference frame and this input's frame (ffmpeg-skill/look), the fit, the LUT."""
+        assert st.reference is not None and st.lut is not None and upstream.artifact is not None
+        p = st.node.parameters
+        if upstream.artifact.hdr:
+            raise ColorError("INVALID_INPUT", f"MATCH_CAMERA {st.node.node_id}: the input is HDR; the fit works on display-referred SDR frames, "
+                             "run HDR_TO_SDR (or OCIO_TRANSFORM) first", {"reason": "hdr_input", "node_id": st.node.node_id})
+        frames = self._match_frames_dir(st, work_dir)
+        ref_png, ref = self._frame(str(st.reference.path), p["reference_at"], frames / "reference", timeout)
+        in_png, inp = self._frame(str(upstream.artifact.path), p["at"], frames / "input", timeout)
+        ref_s, in_s, how = match_mod.samples(ref, inp, p["patches"])
+        f = match_mod.fit(p["model"], ref_s, in_s)
+        text = ocio_mod.cube_text(match_mod.lut_values(f, p["lut_size"]), p["lut_size"], title="color-grading MATCH_CAMERA")
+        data = text.encode("utf-8")
+        tmp = st.lut.path.with_name(st.lut.path.name + ".tmp")
+        tmp.write_bytes(data)
+        os.replace(str(tmp), str(st.lut.path))
+        st.lut = LutInfo(st.lut.path, len(data), sha256_file(str(st.lut.path)))
+        predicted = [match_mod.apply_fit(f, c) for c in in_s]
+        st.measurements = {"sampling": how, "analysis_width": match_mod.ANALYSIS_WIDTH, "fit": f,
+                           "frames": {"reference": {"path": str(ref_png), "sha256": sha256_file(str(ref_png)), "at": p["reference_at"]},
+                                      "input": {"path": str(in_png), "sha256": sha256_file(str(in_png)), "at": p["at"]}},
+                           "delta_e2000": {"before": match_mod.residual(ref_s, in_s), "fit": match_mod.residual(ref_s, predicted)}}
+
+    def _match_residual(self, st: NodeState, out_path: Path, work_dir: Path, timeout: Optional[float]) -> None:
+        """MATCH_CAMERA, after --lut: the same frame of the written output against the reference -- what was achieved,
+        measured on the encoded file, not predicted by the fit."""
+        p = st.node.parameters
+        frames = self._match_frames_dir(st, work_dir)
+        ref = match_mod.read_png(Path(st.measurements["frames"]["reference"]["path"]).read_bytes())   # the frame the fit used
+        out_png, out = self._frame(str(out_path), p["at"], frames / "output", timeout)
+        ref_s, out_s, _ = match_mod.samples(ref, out, p["patches"])
+        st.measurements["frames"]["output"] = {"path": str(out_png), "sha256": sha256_file(str(out_png)), "at": p["at"]}
+        st.measurements["delta_e2000"]["after"] = match_mod.residual(ref_s, out_s)
 
     def _tag_destination(self, st: NodeState, graded: Path, out_path: Path, timeout: Optional[float]) -> None:
         """OCIO_TRANSFORM's second step: the --lut output carries ffmpeg-skill's BT.709 tags; when the destination
@@ -520,6 +586,8 @@ class Executor:
         st.reencoded = m.get("reencoded")
         st.dropped_non_av_streams = m.get("dropped_non_av_streams")
         st.retagged = m.get("retagged")
+        if st.node.type == "MATCH_CAMERA" and isinstance(m.get("lut"), dict):
+            st.lut = LutInfo(Path(m["lut"]["path"]), int(m["lut"]["size"]), m["lut"]["sha256"])
         st.tool_commands = []
         if st.ocio is not None:
             self._write_baked_lut(st)
@@ -578,7 +646,7 @@ class Executor:
             if got != want:
                 raise ColorError("VALIDATION_ERROR", f"{what}: output colour tags {got} do not match the destination's {want} ({st.node.parameters['output_tags']})",
                                  {"reason": "destination_tags_mismatch", "path": str(path), "got": list(got), "want": list(want)})
-        if st.node.type in ("LUT_APPLY", "OCIO_TRANSFORM") and video.get("pix_fmt") != "yuv420p":
+        if st.node.type in ("LUT_APPLY", "OCIO_TRANSFORM", "MATCH_CAMERA") and video.get("pix_fmt") != "yuv420p":
             raise ColorError("VALIDATION_ERROR", f"{what}: output pixel format {video.get('pix_fmt')!r} is not 'yuv420p'", {"reason": "pix_fmt_mismatch", "path": str(path)})
         # subtitle/data-stream survival: ffmpeg-skill >= 0.12.1 tries to keep a source's subtitle/data streams
         # through every re-encoding colour operation and says so honestly (dropped_non_av_streams) when it could
@@ -663,6 +731,8 @@ class Executor:
                 entry["lut"] = s.lut.to_dict()
             if s.ocio is not None:
                 entry["ocio"] = s.ocio.provenance()
+            if s.reference is not None:
+                entry["reference"] = s.reference.to_dict()
             if s.retagged is not None:
                 entry["retagged"] = s.retagged
             if s.measurements:
