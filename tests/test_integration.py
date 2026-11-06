@@ -563,6 +563,44 @@ def test_signal_cancellation_leaves_no_partial_output(workspace):
         assert f.with_suffix(f.suffix + ".json").exists(), "an intermediate without a manifest is a partial output"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="signal.raise_signal(SIGINT) in-process is a console event on Windows")
+def test_signal_between_intermediate_and_manifest_leaves_no_partial(workspace, monkeypatch, skill_dir):
+    # The race behind test_signal_cancellation_leaves_no_partial_output, made deterministic: SIGINT lands while the
+    # executor hashes a finished intermediate, after the tool returned and before the manifest is written. The
+    # handler must not interrupt that code (a KeyboardInterrupt there left the .mp4 without its manifest); the run
+    # stops with CANCELLED at the next checkpoint, and every intermediate on disk is complete.
+    import signal
+    from color_grading import cli
+    from color_grading import executor as execmod
+    from color_grading.doctor import runtime_context
+    from color_grading.security import PathPolicy
+    skill, versions, caps = runtime_context(str(skill_dir), 60)
+    real_hash, fired = execmod.sha256_file, []
+
+    def hash_then_signal(path):
+        if "/.color-grading/" in path.replace(os.sep, "/") and not fired:
+            fired.append(path)
+            signal.raise_signal(signal.SIGINT)
+        return real_hash(path)
+
+    monkeypatch.setattr(execmod, "sha256_file", hash_then_signal)
+    saved = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    try:
+        cli.install_cancel_handlers(skill)
+        ex = execmod.Executor(PathPolicy(str(workspace)), skill, tool_versions=versions, capabilities=caps)
+        d = ex.response(request_doc([op("r1", "RETAG", "source", target="bt709"), op("r2", "RETAG", "op:r1", target="bt601")]))
+    finally:
+        for sig, handler in saved.items():
+            signal.signal(sig, handler)
+    assert fired, "the signal was raised inside the intermediate's hash"
+    assert d["ok"] is False and d["status"] == "cancelled" and d["error"]["code"] == "CANCELLED", d
+    assert not (workspace / "out").exists()
+    left = list(workspace.glob(".color-grading/p1/*.mp4"))
+    assert left, "the intermediate that finished before the signal is kept"
+    for f in left:
+        assert f.with_suffix(f.suffix + ".json").exists(), "an intermediate without a manifest is a partial output"
+
+
 def test_cli_validate_and_exit_codes(workspace):
     code, out, _ = run_cli(["validate", "-", "--json"], json.dumps(request_doc([op("r", "RETAG", "source", target="bt709")])))
     d = one_json(out)

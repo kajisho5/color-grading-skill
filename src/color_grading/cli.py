@@ -116,6 +116,21 @@ def _human(doc: dict) -> None:
         print(f"{doc['skill_id']} {doc['version']}: " + ", ".join(o["type"] for o in doc["operations"]))
 
 
+def install_cancel_handlers(skill: Any) -> None:
+    """SIGINT / SIGTERM (SIGBREAK on Windows) cancel the run. The handler only asks the adapter to cancel: it kills
+    the running tool and the executor stops with CANCELLED at its next checkpoint, removing that step's partial
+    output. It does not raise, so it cannot interrupt the executor between writing an intermediate and its
+    manifest."""
+    def _cancel(signum: int, frame: Any) -> None:
+        skill.cancel()
+
+    for sig in [signal.SIGINT, signal.SIGTERM] + ([signal.SIGBREAK] if hasattr(signal, "SIGBREAK") else []):  # type: ignore[attr-defined]
+        try:
+            signal.signal(sig, _cancel)
+        except (ValueError, OSError):
+            pass
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     as_json = bool(getattr(args, "json", False))
@@ -141,15 +156,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             skill, versions, caps = runtime_context(args.ffmpeg_skill, args.timeout)
             executor = Executor(policy, skill, dry_run=dry_run, reuse=not args.no_reuse, timeout=args.timeout, tool_versions=versions, capabilities=caps)
 
-            def _cancel(signum: int, frame: Any) -> None:
-                skill.cancel()
-                raise KeyboardInterrupt()
-
-            for sig in [signal.SIGINT, signal.SIGTERM] + ([signal.SIGBREAK] if hasattr(signal, "SIGBREAK") else []):  # type: ignore[attr-defined]
-                try:
-                    signal.signal(sig, _cancel)
-                except (ValueError, OSError):
-                    pass
+            install_cancel_handlers(skill)
             try:
                 doc = executor.response(document)
             except KeyboardInterrupt:
