@@ -431,3 +431,18 @@
   - *Effect on the agent.* With this, the agent's pinned 0.4.0 contract shows no breaking drift and passes
     `check_contract` against the live contract (checked with the agent's own functions); the new operations appear as
     capability it does not use until it re-pins.
+- **ADR-27 Releases: the version is resolved by release-drafter v7 in dry-run mode.** After v0.4.0 every push to
+  main (#26 to #36: OCIO_TRANSFORM, MATCH_CAMERA, LEGALIZE, the contract fix and the alpha guard among them) ran the
+  release workflow to a green finish without a release: the log says "No version could be resolved: nothing to
+  release." with `RESOLVED_VERSION` empty, although the merged PRs carry `feature` / `fix` / `chore` labels and the
+  config has `default: patch`. The resolver step was release-drafter v6.4.0 with `disable-releaser: true`, which
+  skips resolving a release at all and so never sets `resolved_version`. v0.3.0 and v0.4.0 were released only
+  because their versions were bumped by hand (the "respecting the manual bump" path), which does not read the
+  resolver.
+  - *Decision.* The release workflow resolves with release-drafter v7.10.0 and `dry-run: true` (pinned by SHA, the
+    same step the sibling video-editing-skill uses), which computes `resolved_version` and creates no release. The
+    labeler workflow keeps v6.4.0 (`disable-releaser: true` there only means "label, don't draft", which works).
+  - *Guard.* On the auto-bump path an empty resolved version with commits after the latest tag now fails the job
+    (`::error::`) instead of ending green, so a resolver that stops producing a version is seen at once.
+  - *Effect.* The first push after this resolves the labels merged since v0.4.0; the `feature` PRs make it a minor
+    release, 0.5.0.
