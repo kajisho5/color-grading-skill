@@ -38,7 +38,7 @@ Agent wires 5 color_* skills through color-grading/run, every PRIMARY_CORRECTION
   - なぜ要るか：会場の複数カメラの色の違いを、マルチカムの切り替えで目立たなくできる
   - Done when: a fixture whose camera B is camera A with a known tint and gain matches within ΔE 2 on average
 - [ ] **7. Broadcast legal range and gamut** — LEGALIZE: soft-clip to BT.709 legal levels (8-bit 16-235 / 10-bit 64-940, chroma limits) and report the share of pixels out of range before and after; the limits follow EBU R103 when that profile is asked for
-  - なぜ要るか：放送局納品や中継の送出で、レベル外の信号で差し戻されない
+  - なぜ要るか：放送局への納品で、レベル外の信号で差し戻されない
   - Done when: a fixture with super-whites ends within range and the report gives both shares
 - [ ] **8. Alpha-aware grading** — LUT_APPLY / PRIMARY_CORRECTION on a source with alpha keep the alpha unchanged, and a premultiplied source is un-premultiplied before the correction and premultiplied again after
   - なぜ要るか：テロップや CG の色を変えても、縁が黒ずんだり白く浮いたりしない
