@@ -13,7 +13,7 @@ from .adapter import LUT_LEGS_FIXED_IN, FfmpegSkill
 from .adapter import version_tuple as _version_tuple
 from .errors import ColorError
 from . import ocio as ocio_mod
-from .executor import CHECKOUT_CAPABILITIES, OPTIONAL_CHECKOUT_CAPABILITIES, PYTHON_CAPABILITIES, TOOL_FOR
+from .executor import ALPHA_LINE_ENCODERS, CHECKOUT_CAPABILITIES, OPTIONAL_CHECKOUT_CAPABILITIES, PYTHON_CAPABILITIES, TOOL_FOR
 from .model import OPERATION_TYPES, OUTPUT_FORMATS, UNSUPPORTED_OPERATIONS
 from .security import PathPolicy
 
@@ -22,7 +22,8 @@ OPTIONAL_USE = {"ffmpeg-skill/check:levels": "LEGALIZE: out-of-range shares befo
                 "ffmpeg-skill/color:legalize": "LEGALIZE: Y'CbCr clamp after the 4:2:0 conversion in the same encode (otherwise the soft clip alone)",
                 "ffmpeg-skill/color:keep-alpha": "LUT_APPLY / PRIMARY_CORRECTION on an alpha source, alpha kept (otherwise refused, alpha_not_preserved)"}
 # capabilities used across the implemented operations, beyond the base ffmpeg/ffprobe pair
-ALL_CAPABILITIES = sorted({c for _, extra in TOOL_FOR.values() for c in extra if c not in PYTHON_CAPABILITIES and c not in CHECKOUT_CAPABILITIES})
+ALL_CAPABILITIES = sorted({c for _, extra in TOOL_FOR.values() for c in extra if c not in PYTHON_CAPABILITIES and c not in CHECKOUT_CAPABILITIES}
+                          | {f"encoder:{e}" for e in ALPHA_LINE_ENCODERS.values()})
 
 
 def python_capabilities() -> Dict[str, str]:

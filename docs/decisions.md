@@ -496,7 +496,10 @@
     chroma 5–251) luma 8.7776 % → 0 %. The test counts every sample of both files itself (rawvideo) and checks the
     reported shares against its own count.
   - *Reuse.* A manifest written before the shares and the clamp were recorded is not reused: the step runs again
-    rather than report less.
+    rather than report less. A reused report that is unmeasured (no check then, or a file it could not measure) is
+    measured again when check is available now, and the manifest keeps the new report.
+  - *A measurement that cannot finish* (check times out or fails to start) leaves the shares `measured: false` with
+    the reason; the already validated file is still delivered. A cancellation stays a cancellation.
   - *Contract.* Additive: `legalize` (what the clamp and the measurement need and record), `optional_capabilities`,
     `ffmpeg_skill.optional_flags`, `ffmpeg_skill.flags_used.check`, `dependencies[0].optional_tools` gains
     `ffmpeg-skill/check`, and `provenance_extensions` describes the new `legalize` keys. The pinned blocks (ADR-26) are
@@ -519,9 +522,18 @@
     the container, or export the fill first.
   - *Verified.* color's `alpha` step must be present and pass, else `VALIDATION_ERROR` (`alpha_unverified`,
     `alpha_lost` for `alpha_dropped`, `alpha_mismatch`); a failed `alpha` step is also read on a source this skill does
-    not see as alpha (VP9 with an alpha layer probes as `yuv420p`). The output must store an alpha plane, and the
+    not see as alpha. A VP9 stream with an alpha layer probes as `yuv420p` through ffmpeg-skill/probe, which reports no
+    alpha field, and this skill runs no ffprobe of its own: such a source is graded without `--keep-alpha`, color's
+    `alpha` step fails, and the run is a `VALIDATION_ERROR` (`alpha_lost`) whose message says to export it to ProRes
+    4444 / qtrle / PNG first. Detecting it up front needs an alpha field in ffmpeg-skill/probe (proposal).
+  - *Encoder.* An alpha grade requires its line's encoder (`encoder:prores_ks`, `qtrle`, `png`, `libvpx-vp9`) in place
+    of `encoder:libx264`; doctor reports those encoders.
+  - *Precision.* color splits the alpha at 8 bits. A deeper source alpha (ProRes 4444's 10 / 12 / 16-bit, `gbrap16`,
+    `rgba64`) comes back within one 8-bit code, which color's own step accepts (2 of 255). It is not refused: ProRes
+    4444 is the usual alpha master and one 8-bit code is below what a composite shows; it is recorded instead
+    (`alpha.precision_bits: 8`) and named in a warning. Bit-identical alpha holds for 8-bit alpha (qtrle, PNG, rgba). The output must store an alpha plane, and the
     `yuv420p` check of LUT_APPLY does not apply to an alpha line. Results and provenance carry `alpha {kept,
-    alpha_codec, alpha_mode, source_colour, tool, verification}`; plan steps carry `alpha {keep_alpha, alpha_codec,
+    precision_bits, alpha_codec, alpha_mode, source_colour, tool, verification}`; plan steps carry `alpha {keep_alpha, alpha_codec,
     alpha_mode}`.
   - *Measured.* qtrle fixture (one straight colour under a 0..255 alpha ramp), LUT: the alpha is bit-identical in every
     frame and the graded colour is one colour from transparent to opaque pixels (no fringe). ProRes 4444 fixture

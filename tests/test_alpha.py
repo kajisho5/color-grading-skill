@@ -99,6 +99,16 @@ def _alpha(path):
                           capture_output=True, check=True).stdout
 
 
+def _bt709_read_as_bt601(rgb):
+    """An 8-bit RGB colour written as BT.709 limited-range Y'CbCr and read back with BT.601's coefficients."""
+    r, g, b = (v / 255 for v in rgb)
+    y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+    cb, cr = (b - y) / 1.8556, (r - y) / 1.5748
+    r2, b2 = y + 1.402 * cr, y + 1.772 * cb
+    g2 = (y - 0.299 * r2 - 0.114 * b2) / 0.587
+    return tuple(round(255 * min(max(v, 0.0), 1.0)) for v in (r2, g2, b2))
+
+
 def _rgba(path):
     return subprocess.run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "rawvideo", "-pix_fmt", "rgba", "-"], capture_output=True, check=True).stdout
 
@@ -128,9 +138,14 @@ def test_a_lossless_alpha_is_bit_identical_after_a_lut_and_its_edges_have_no_fri
     colours = [tuple(px[i:i + 3]) for i in range(0, len(px), 4)]
     # one colour from fully transparent to opaque pixels (a rounding code allowed): no fringe
     assert all(max(c) - min(c) <= 1 for c in zip(*colours)), sorted(set(colours))[:8]
-    # the LUT ran (0x8040c0 inverted is 0x7fbf3f: green up, red and blue down) ...
-    r0, g0, b0 = colours[0]
-    assert g0 > 150 and r0 < 0x80 + 10 and b0 < 0x80, colours[0]
+    # the LUT ran: the colour is the source's decoded colour inverted, exactly, or (FFmpeg builds whose RGB line reads
+    # the legs' BT.709 limited-range Y'CbCr as BT.601, ADR-30) that inversion through exactly that mismatch; 2 codes of
+    # rounding either way. Anything else (another colour, a LUT that did not run) fails
+    src = _rgba(workspace / "alpha_rle.mov")
+    inverted = tuple(255 - c for c in src[:3])
+    candidates = {"exact": inverted, "bt709_read_as_bt601": _bt709_read_as_bt601(inverted)}
+    near = [k for k, e in candidates.items() if max(abs(c - x) for c, x in zip(colours[0], e)) <= 2]
+    assert near, (colours[0], candidates)
     # ... and --lut's legs on an RGB alpha source are named in a warning: they convert back with another matrix on some
     # FFmpeg builds (ADR-30: an identity LUT moved 0x7f3ebf to 0x7a2fba with FFmpeg 6.1), a colour shift, not a fringe
     assert any("RGB alpha source" in w for w in d["warnings"]), d["warnings"]
@@ -220,5 +235,5 @@ def test_a_passing_alpha_step_is_recorded(tmp_path):
     step = {"step": "alpha", "ok": True, "comparison": {"ok": True, "worst_delta": 0.0}}
     st = _state()
     ex._check_tool_verification(st, _Run({"verification": [step], "alpha_codec": "prores4444", "alpha_mode": "straight"}), tmp_path / "x.mov")
-    assert st.alpha == {"kept": True, "alpha_codec": "prores4444", "alpha_mode": "straight", "source_colour": "taken as straight (not un-premultiplied)",
+    assert st.alpha == {"kept": True, "precision_bits": 8, "alpha_codec": "prores4444", "alpha_mode": "straight", "source_colour": "taken as straight (not un-premultiplied)",
                         "tool": "ffmpeg-skill/color --keep-alpha", "verification": step}

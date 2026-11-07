@@ -451,7 +451,14 @@ class FfmpegSkill:
         cheap ones; check exits non-zero when one of those fails, and the `levels` document is still read then."""
         argv = [sys.executable, self.script("check"), path, "--platform", "custom", "--no-loudness", "--levels", standard,
                 "--levels-window", "10", "--levels-tolerance", "100", "--json"]
-        code, out, err, seconds = self._popen(argv, timeout or self.timeout)
+        try:
+            code, out, err, seconds = self._popen(argv, timeout or self.timeout)
+        except ColorError as e:
+            # the operation's file is already written and validated: a measurement that cannot finish leaves the shares
+            # unmeasured, it does not fail the operation. A cancellation stays a cancellation
+            if e.code == "CANCELLED":
+                raise
+            return None, f"ffmpeg-skill/check --levels did not finish: {e.message}"
         data = _parse_json(out)
         tail = "\n".join(err.strip().splitlines()[-12:])
         self.runs.append(ToolRun("check", argv, code, data, tail, seconds, list(data.get("commands", [])) if isinstance(data.get("commands"), list) else []))

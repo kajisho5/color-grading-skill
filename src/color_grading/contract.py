@@ -11,7 +11,7 @@ from .adapter import FLAG_ALTERNATIVES, FLAGS_USED, KNOWN_CONTRACT_VERSION, KNOW
 from .errors import ERROR_CODES, ERROR_TABLE, EXIT_CODES
 from . import legalize as legalize_mod
 from . import ocio as ocio_mod
-from .executor import (ALPHA_GRADING_OPERATIONS, ALPHA_LINE_DEFAULT, ALPHA_LINE_EXTENSIONS, ALPHA_LINE_FOR_CODEC, ALPHA_MODE, ALPHA_PIX_FMT_RE,
+from .executor import (ALPHA_GRADING_OPERATIONS, ALPHA_LINE_DEFAULT, ALPHA_LINE_ENCODERS, ALPHA_LINE_EXTENSIONS, ALPHA_LINE_FOR_CODEC, ALPHA_MODE, ALPHA_PIX_FMT_RE,
                        DURATION_TOLERANCE, OPTIONAL_CHECKOUT_CAPABILITIES, REENCODING_OPERATIONS, TOOL_FOR, WORK_DIR_NAME)
 from .model import (CUBE_EXTENSIONS, FORBIDDEN_KEYS, ID_RE, MAX_LUT_BYTES, MAX_OPERATIONS, OPERATION_TYPES, OUTPUT_FORMATS, REF_RE,
                     HLG_TRANSFER, OPERATION_ALIASES, TONEMAP_DEFAULT, TONEMAP_HLG_DEFAULT, TONEMAP_RULES, REQUEST_SCHEMA_ID, RETAG_TAGS, RETAG_TARGETS, TONEMAPS, UNSUPPORTED_OPERATIONS, X264_PRESETS)
@@ -152,11 +152,16 @@ def skill_contract() -> Dict[str, Any]:
                                  "refused_for_with_keep_alpha": [t for t in REENCODING_OPERATIONS if t not in ALPHA_GRADING_OPERATIONS],
                                  "alpha_codec_by_input_codec": dict(ALPHA_LINE_FOR_CODEC), "alpha_codec_default": ALPHA_LINE_DEFAULT,
                                  "containers": {k: list(v) for k, v in ALPHA_LINE_EXTENSIONS.items()}, "alpha_mode": ALPHA_MODE,
+                                 "encoders": dict(ALPHA_LINE_ENCODERS), "precision_bits": 8,
+                                 "precision": "ffmpeg-skill/color keeps the alpha at 8 bits: a deeper source alpha comes back within one 8-bit "
+                                              "code (a warning says so); an 8-bit alpha is bit-identical",
+                                 "not_detected": "a VP9 stream with an alpha layer probes as yuv420p through ffmpeg-skill/probe: it is graded without "
+                                                 "--keep-alpha and color's failed alpha step makes it a VALIDATION_ERROR (alpha_lost)",
                                  "premultiplied_source": "not un-premultiplied: the source's colour is taken as straight, as ffmpeg-skill/color takes it",
                                  "verification": "ffmpeg-skill/color's alpha step (written alpha against the source's, every frame) must pass, else "
                                                  "VALIDATION_ERROR (alpha_lost / alpha_mismatch / alpha_unverified); the output must store an alpha plane",
                                  "output": "the alpha line's pixel format (e.g. yuva444p12le for ProRes 4444) with the source's colour tags, not yuv420p",
-                                 "recorded_as": "alpha {kept, alpha_codec, alpha_mode, source_colour, tool, verification} in results and provenance"}},
+                                 "recorded_as": "alpha {kept, precision_bits, alpha_codec, alpha_mode, source_colour, tool, verification} in results and provenance"}},
         # ADR-29: what LEGALIZE adds where the located ffmpeg-skill offers it; without it, the soft clip alone and no shares
         "legalize": {"clamp": {"requires": "ffmpeg-skill/color:legalize", "how": "color --lut <soft clip> --legalize <profile>: one encode, clamped after the 4:2:0 conversion",
                                "verification": "ffmpeg-skill/color's legal_levels step must pass (at most 1 % of one frame's luma or chroma samples out), else "

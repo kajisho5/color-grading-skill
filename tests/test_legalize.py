@@ -182,3 +182,29 @@ def test_hdr_input_is_refused(workspace, skill_dir):
     if _refused_here(skill_dir, code, d):
         return
     assert code != 0 and d["error"]["code"] == "INVALID_INPUT" and d["error"]["details"]["reason"] == "hdr_input"
+
+
+def test_a_reused_unmeasured_report_is_measured_again(workspace, skill_dir, capabilities):
+    """A run without check --levels leaves the shares unmeasured; a later run that has it reuses the encode and measures
+    them, and the manifest keeps the measured report."""
+    from color_grading.doctor import runtime_context
+    from color_grading.executor import Executor
+    from color_grading.security import PathPolicy
+    from color_grading.adapter import FfmpegSkill
+    if capabilities.get("ffmpeg-skill/check:levels") != "supported" or FfmpegSkill.locate(str(skill_dir)).info().features["lut_legs_bt709"] is False:
+        return   # nothing to measure again here; the fallback is covered by the tests above
+    skill, versions, caps = runtime_context(str(skill_dir), 120)
+    first = Executor(PathPolicy(str(workspace)), skill, tool_versions=versions, capabilities={**caps, "ffmpeg-skill/check:levels": "unsupported"}).response(_doc())
+    assert first["ok"], first.get("error")
+    r1 = next(x for x in first["results"] if x["type"] == "LEGALIZE")
+    assert r1["legalize"]["out_of_range_share"] == {"measured": False, "reason": legalize.SHARES_NOT_MEASURED}
+    import shutil
+    shutil.rmtree("out")
+    skill, versions, caps = runtime_context(str(skill_dir), 120)
+    second = Executor(PathPolicy(str(workspace)), skill, tool_versions=versions, capabilities=caps).response(_doc())
+    assert second["ok"], second.get("error")
+    r2 = next(x for x in second["results"] if x["type"] == "LEGALIZE")
+    assert r2["status"] == "reused" and r2["operation_id"] == r1["operation_id"]
+    assert r2["legalize"]["out_of_range_share"]["measured"] is True
+    manifest = json.loads(next((workspace / ".color-grading" / "p1").glob(r2["operation_id"][:16] + ".mp4.json")).read_text())
+    assert manifest["legalize"]["out_of_range_share"]["measured"] is True

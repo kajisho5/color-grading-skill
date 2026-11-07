@@ -81,6 +81,11 @@ ALPHA_GRADING_OPERATIONS = ("LUT_APPLY", "PRIMARY_CORRECTION")
 ALPHA_LINE_FOR_CODEC = {"prores": "prores4444", "qtrle": "qtrle", "png": "png", "vp9": "vp9"}
 ALPHA_LINE_DEFAULT = "prores4444"
 ALPHA_LINE_EXTENSIONS = {"prores4444": (".mov", ".mkv"), "qtrle": (".mov",), "png": (".mov", ".mkv"), "vp9": (".mkv",)}
+# the encoder each line needs: it replaces encoder:libx264 in an alpha grade's required capabilities
+ALPHA_LINE_ENCODERS = {"prores4444": "prores_ks", "qtrle": "qtrle", "png": "png", "vp9": "libvpx-vp9"}
+# ffmpeg-skill/color --keep-alpha splits the alpha off at 8 bits (measured, ADR-30): a deeper source alpha comes back
+# within one 8-bit code, not bit-identical. Pixel formats whose alpha is deeper than 8 bits
+DEEP_ALPHA_PIX_FMT_RE = re.compile(r"^(yuva\d+p(9|10|12|16)|gbrap(10|12|14|16)|ya16|rgba64|bgra64)")
 # how the source's colour is taken and written beside its alpha: straight, as ffmpeg-skill/color takes every source.
 # A premultiplied source is not un-premultiplied before the grade (ffmpeg-skill has no such step), ADR-30
 ALPHA_MODE = "straight"
@@ -259,6 +264,9 @@ class Executor:
                 self.warnings.append(f"LUT_APPLY {luts_on_rgb} on an RGB alpha source ({source['pix_fmt']}): ffmpeg-skill/color --lut's colour legs can "
                                      "shift colours on the way back to the RGB alpha line with some FFmpeg builds (BT.709 written, another matrix read); "
                                      "the alpha is kept. Check the colour, or grade a Y'CbCr alpha master (ProRes 4444) instead")
+            if line and DEEP_ALPHA_PIX_FMT_RE.match(str(source["pix_fmt"])) and any(op.type in ALPHA_GRADING_OPERATIONS for op in project.operations):
+                self.warnings.append(f"the source's alpha is deeper than 8 bits ({source['pix_fmt']}): ffmpeg-skill/color --keep-alpha carries it at 8 bits, "
+                                     "so it comes back within one 8-bit code, not bit-identical (alpha.precision_bits in provenance)")
 
         input_paths = {str(resolved_source)}
         outputs: Dict[str, Path] = {}
@@ -357,7 +365,7 @@ class Executor:
         for n in graph.order:
             node = graph.nodes[n]
             st = NodeState(node, identities[n])
-            st.tool, st.capabilities = self._select_tool(node)
+            st.tool, st.capabilities = self._select_tool(node, line if line is not None and node.type in ALPHA_GRADING_OPERATIONS else None)
             if n in luts:
                 st.lut = luts[n]
             if n in selections:
@@ -449,8 +457,11 @@ class Executor:
                         source["hdr"], source["dolby_vision"], source["size"], source["sha256"])
 
     # ---- planning
-    def _select_tool(self, node: Node) -> Tuple[str, List[str]]:
+    def _select_tool(self, node: Node, alpha_line_: Optional[str] = None) -> Tuple[str, List[str]]:
         tool, extra = TOOL_FOR[node.type]
+        if alpha_line_ is not None:
+            # an alpha grade writes the alpha line, not H.264: its own encoder is what must be available (ADR-30)
+            extra = [f"encoder:{ALPHA_LINE_ENCODERS[alpha_line_]}" if c == "encoder:libx264" else c for c in extra]
         caps = ["ffmpeg-skill", "ffmpeg", "ffprobe", *extra]
         missing = [c for c in caps if not self._capability_available(c)]
         if missing:
@@ -580,6 +591,13 @@ class Executor:
         manifest = out_path.with_suffix(out_path.suffix + ".json")
         if reuse and self._reusable(st, out_path, manifest):
             st.status = "reused"
+            if (node.type == "LEGALIZE" and st.baked is not None and not st.baked.share.get("measured")
+                    and self._supported("ffmpeg-skill/check:levels")):
+                # a report left unmeasured (no check then, or a file it could not measure) is measured again, and kept
+                self._measure_levels(st, upstream, timeout)
+                m = json.loads(manifest.read_text(encoding="utf-8"))
+                m["legalize"] = st.baked.provenance()
+                manifest.write_text(json.dumps(m, indent=2, sort_keys=True), encoding="utf-8")
             return
         graded = out_path.with_name(out_path.stem + ".graded" + out_path.suffix) if node.type == "OCIO_TRANSFORM" else out_path
         for stale in (out_path, manifest, graded):
@@ -641,14 +659,16 @@ class Executor:
         legal = next((s for s in steps if s.get("step") == "legal_levels"), None)
         what = f"{st.node.type} {st.node.node_id}"
         if st.alpha_line:
-            st.alpha = {"kept": bool(alpha_step and alpha_step.get("ok")), "alpha_codec": run.data.get("alpha_codec", st.alpha_line),
+            st.alpha = {"kept": bool(alpha_step and alpha_step.get("ok")), "precision_bits": 8, "alpha_codec": run.data.get("alpha_codec", st.alpha_line),
                         "alpha_mode": run.data.get("alpha_mode", ALPHA_MODE), "source_colour": "taken as straight (not un-premultiplied)",
                         "tool": "ffmpeg-skill/color --keep-alpha", "verification": alpha_step}
             if alpha_step is None:
                 raise ColorError("VALIDATION_ERROR", f"{what}: ffmpeg-skill/color --keep-alpha reported no alpha verification step",
                                  {"reason": "alpha_unverified", "path": str(written)})
         if alpha_step is not None and not alpha_step.get("ok"):
-            raise ColorError("VALIDATION_ERROR", f"{what}: ffmpeg-skill/color's alpha check failed ({alpha_step.get('reason') or 'alpha differs from the source'})",
+            hint = ("" if st.alpha_line else "; the source was not seen as having alpha (a VP9 stream with an alpha layer probes as yuv420p through "
+                                              "ffmpeg-skill/probe), so it was graded without --keep-alpha: export it to ProRes 4444 / qtrle / PNG first")
+            raise ColorError("VALIDATION_ERROR", f"{what}: ffmpeg-skill/color's alpha check failed ({alpha_step.get('reason') or 'alpha differs from the source'}){hint}",
                              {"reason": "alpha_lost" if alpha_step.get("reason") == "alpha_dropped" else "alpha_mismatch", "path": str(written),
                               "step": alpha_step})
         if st.baked is not None and getattr(st.baked, "clamp", None) is not None:

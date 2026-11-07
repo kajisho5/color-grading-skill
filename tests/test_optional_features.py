@@ -101,6 +101,26 @@ def test_levels_never_lets_the_row_fail_and_reads_the_document_even_when_check_f
     assert s.runs[-1].tool == "check"
 
 
+class _RaisingSkill(_LevelsSkill):
+    def __init__(self, error):
+        super().__init__(0, {})
+        self.error = error
+
+    def _popen(self, argv, timeout, cwd=None):
+        raise self.error
+
+
+def test_a_measurement_that_times_out_leaves_the_shares_unmeasured():
+    doc, why = _RaisingSkill(ColorError("TOOL_ERROR", "check.py exceeded 5s", {"reason": "timeout"})).levels("/a.mp4", "bt709", 5)
+    assert doc is None and "did not finish" in why and "exceeded" in why
+
+
+def test_a_cancelled_measurement_stays_cancelled():
+    with pytest.raises(ColorError) as e:
+        _RaisingSkill(ColorError("CANCELLED", "interrupted")).levels("/a.mp4", "bt709")
+    assert e.value.code == "CANCELLED"
+
+
 def test_levels_reports_why_nothing_was_measured():
     row = {"check": "legal levels", "status": "WARN", "value": "not measured: rgb24 is not a Y'CbCr picture", "reason": "an RGB or grey picture has no luma"}
     doc, why = _LevelsSkill(0, {"status": "completed", "checks": [row]}).levels("/a.mov", "bt709")
@@ -149,9 +169,30 @@ def test_keep_alpha_is_planned_with_the_line_of_the_input_codec(tmp_path):
 
 
 def test_no_rgb_warning_for_a_ycbcr_alpha_master_or_a_correction(tmp_path):
-    assert not _plan(tmp_path, [LUT], ALL, ALPHA_VIDEO)["warnings"]
+    assert not any("RGB alpha source" in w for w in _plan(tmp_path, [LUT], ALL, ALPHA_VIDEO)["warnings"])
     pc = {"op_id": "p", "type": "PRIMARY_CORRECTION", "input": "source", "parameters": {"gamma": 1.2}}
     assert not _plan(tmp_path, [pc], ALL, {**ALPHA_VIDEO, "codec": "qtrle", "pix_fmt": "argb"})["warnings"]
+
+
+@pytest.mark.parametrize("pix_fmt,deep", [("yuva444p10le", True), ("yuva444p12le", True), ("gbrap16le", True), ("rgba64le", True),
+                                          ("yuva420p", False), ("argb", False), ("rgba", False)])
+def test_an_alpha_deeper_than_8_bits_is_named_in_a_warning(tmp_path, pix_fmt, deep):
+    pc = {"op_id": "p", "type": "PRIMARY_CORRECTION", "input": "source", "parameters": {"gamma": 1.2}}
+    d = _plan(tmp_path, [pc], ALL, {**ALPHA_VIDEO, "pix_fmt": pix_fmt})
+    assert d["ok"], d.get("error")
+    assert any("deeper than 8 bits" in w for w in d["warnings"]) is deep
+
+
+def test_an_alpha_grade_needs_its_lines_encoder_not_libx264(tmp_path):
+    d = _plan(tmp_path, [LUT], {**ALL, "encoder:libx264": "unsupported"}, ALPHA_VIDEO)
+    assert d["ok"], d.get("error")
+    step = d["plan"]["required_capabilities"]
+    assert "encoder:prores_ks" in step and "encoder:libx264" not in step
+    d = _plan(tmp_path, [LUT], {**ALL, "encoder:prores_ks": "unsupported"}, ALPHA_VIDEO)
+    assert d["ok"] is False and d["error"]["code"] == "TOOL_ERROR" and d["error"]["details"]["missing"] == ["encoder:prores_ks"]
+    # an opaque grade still needs libx264
+    d = _plan(tmp_path, [LUT], {**ALL, "encoder:libx264": "unsupported"}, {**ALPHA_VIDEO, "pix_fmt": "yuv422p10le"})
+    assert d["ok"] is False and d["error"]["details"]["missing"] == ["encoder:libx264"]
 
 
 def test_an_opaque_source_gets_no_alpha_flags(tmp_path):
