@@ -1,3 +1,7 @@
+## v0.5.1 - 2026-11-07
+
+- fix: default HDR_TO_SDR to mobius for an HLG input (ADR-28) (#38) (e155caf)
+
 ## v0.5.0 - 2026-11-06
 
 - fix(release): resolve the version with release-drafter v7 dry-run (#37) (9120d76)
