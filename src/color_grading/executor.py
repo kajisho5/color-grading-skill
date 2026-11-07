@@ -779,6 +779,10 @@ class Executor:
         prev = m.get("legalize") or {}
         if st.node.type == "LEGALIZE" and not (isinstance(prev.get("out_of_range_share"), dict) and isinstance(prev.get("clamp"), dict)):
             return False   # written before the shares and the clamp were recorded (ADR-29): run it again rather than report less
+        alpha = m.get("alpha")
+        if st.alpha_line and not (isinstance(alpha, dict) and alpha.get("kept") is True and isinstance(alpha.get("verification"), dict)
+                                  and alpha["verification"].get("ok") is True and has_alpha(art.get("pix_fmt"))):
+            return False   # this run keeps the alpha, the entry has no kept-and-verified alpha record (ADR-31): run it again
         st.artifact = Artifact(out_path, float(art["duration"]), int(art["width"]), int(art["height"]), art.get("pix_fmt"), art.get("codec"),
                                art.get("color_space"), art.get("color_primaries"), art.get("color_transfer"), art.get("color_range"),
                                bool(art.get("hdr")), bool(art.get("dolby_vision")), int(art["size"]), art["sha256"])
@@ -786,7 +790,7 @@ class Executor:
         st.reencoded = m.get("reencoded")
         st.dropped_non_av_streams = m.get("dropped_non_av_streams")
         st.retagged = m.get("retagged")
-        st.alpha = m.get("alpha")
+        st.alpha = alpha
         if st.node.type == "LEGALIZE" and st.baked is not None:
             st.baked.share = dict(prev["out_of_range_share"])
             st.baked.clamp = dict(prev["clamp"]) if prev["clamp"].get("applied") else None

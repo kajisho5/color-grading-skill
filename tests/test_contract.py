@@ -6,7 +6,8 @@ from color_grading.contract import skill_contract
 from color_grading.doctor import capability_status, doctor_report
 from color_grading.errors import ERROR_CODES, EXIT_CODES
 from color_grading.executor import TOOL_FOR
-from color_grading.model import OPERATION_ALIASES, OPERATION_TYPES, OUTPUT_FORMATS, UNSUPPORTED_OPERATIONS
+from color_grading.model import (HLG_TRANSFER, OPERATION_ALIASES, OPERATION_TYPES, OUTPUT_FORMATS, TONEMAP_DEFAULT, TONEMAP_HLG_DEFAULT,
+                                 UNSUPPORTED_OPERATIONS)
 from conftest import one_json, run_cli
 
 
@@ -23,7 +24,10 @@ def test_contract_matches_implementation():
     assert set(c["output_formats"]) == set(OUTPUT_FORMATS)
     assert c["errors"]["codes"] == list(ERROR_CODES) and c["errors"]["exit_codes"] == EXIT_CODES
     assert c["execution"]["shell"] is False and c["execution"]["arbitrary_filters"] is False and c["execution"]["ai"] is False
-    assert c["hdr_sdr"]["tone_mapping_selection"].startswith("always an explicit")
+    # ADR-31: the line says what the executor does (ADR-28): an explicit curve wins, else mobius for HLG, hable otherwise
+    sel = c["hdr_sdr"]["tone_mapping_selection"]
+    assert sel.startswith("an explicit typed parameter") and "always wins" in sel and "never picks" not in sel
+    assert f"{TONEMAP_HLG_DEFAULT} for HLG ({HLG_TRANSFER})" in sel and f"{TONEMAP_DEFAULT} for PQ and any other or unknown transfer" in sel
     text = json.dumps(c, sort_keys=True)
     assert text == json.dumps(skill_contract(), sort_keys=True)     # deterministic
     # generic core: no production-house / camera-brand vocabulary
@@ -109,13 +113,26 @@ def test_capability_status_table():
 def test_blocks_a_consumer_pins_are_unchanged_since_0_4_0():
     """video-production-agent pins this contract and makes the skill unavailable when one of these blocks changes
     (its ADR-045: protocol / execution shape). The snapshot is those blocks of the 0.4.0 contract it pins; new facts go
-    into new keys (provenance_extensions, request_types, ocio, alpha, ...), never into these."""
+    into new keys (provenance_extensions, request_types, ocio, alpha, ...), never into these.
+
+    One deliberate exception (ADR-31): hdr_sdr.tone_mapping_selection said "this skill never picks one automatically",
+    which 0.5.1's default curve (ADR-28) contradicted. It is reworded, so a consumer re-pins once; every other key of
+    every pinned block is still compared with the 0.4.0 snapshot."""
     import json
     from pathlib import Path
     pinned = json.loads((Path(__file__).parent / "fixtures" / "contract_0.4.0_pinned_blocks.json").read_text(encoding="utf-8"))
     live = skill_contract()
+    reworded = {("hdr_sdr", "tone_mapping_selection")}
     for key, value in pinned.items():
+        if key == "hdr_sdr":
+            assert set(live[key]) == set(value), key
+            for sub in value:
+                if (key, sub) not in reworded:
+                    assert live[key][sub] == value[sub], (key, sub)
+            continue
         assert live[key] == value, key
+    assert pinned["hdr_sdr"]["tone_mapping_selection"].endswith("this skill never picks one automatically")
+    assert live["hdr_sdr"]["tone_mapping_selection"] != pinned["hdr_sdr"]["tone_mapping_selection"]
 
 
 def test_every_parameter_has_one_of_the_four_scalar_types():
