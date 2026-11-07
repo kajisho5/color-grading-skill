@@ -30,7 +30,7 @@ from .graph import Node, OperationGraph
 from . import legalize as legalize_mod
 from . import match as match_mod
 from . import ocio as ocio_mod
-from .model import CUBE_EXTENSIONS, MAX_LUT_BYTES, OUTPUT_FORMATS, RETAG_TAGS, ColorRequest, parse_patches, parse_request
+from .model import CUBE_EXTENSIONS, MAX_LUT_BYTES, OUTPUT_FORMATS, RETAG_TAGS, ColorRequest, parse_patches, parse_request, select_tonemap
 from .security import PathPolicy
 
 RESPONSE_SCHEMA_ID = f"{SKILL_ID}/response@{RESPONSE_SCHEMA_VERSION}"
@@ -127,6 +127,7 @@ class NodeState:
     baked: Optional[Any] = None                    # a LUT this skill computed at planning: ocio.BakedLut (kind "ocio"), legalize.LegalLut (kind "legalize")
     reference: Optional[LutInfo] = None            # MATCH_CAMERA: the reference video (path, size, sha256)
     retagged: Optional[bool] = None                # OCIO_TRANSFORM: whether a --retag pass was needed for the destination's tags
+    tonemap_selection: Optional[Dict[str, Any]] = None   # HDR_TO_SDR: the curve run and the rule that chose it (ADR-28)
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {"node_id": self.node.node_id, "operation_id": self.identity, "type": self.node.type,
@@ -142,6 +143,8 @@ class NodeState:
             d["reference"] = self.reference.to_dict()
         if self.retagged is not None:
             d["retagged"] = self.retagged
+        if self.tonemap_selection is not None:
+            d["tonemap_selection"] = self.tonemap_selection
         d["tool_commands_observed"] = list(self.tool_commands)
         d["measurements"] = self.measurements
         if self.reencoded is not None:
@@ -285,6 +288,14 @@ class Executor:
             overrides[f"op:{op.op_id}"] = {"reference_path": references[f"op:{op.op_id}"].sha256}
             if any(str(t) == str(ref) for t in outputs.values()):
                 raise ColorError("OUTPUT_ERROR", f"an output would overwrite the reference of operation {op.op_id!r}", {"reason": "input_output_collision", "path": str(ref)})
+        # HDR_TO_SDR without a tonemap: the curve follows the input's transfer (ADR-28), resolved before the identities so
+        # an HLG default and an explicit mobius share one identity (same output), and a pre-0.5.1 hable intermediate is not reused
+        selections: Dict[str, Dict[str, Any]] = {}
+        for n in graph.order:
+            node = graph.nodes[n]
+            if node.type == "HDR_TO_SDR":
+                selections[n] = select_tonemap(node.parameters.get("tonemap"), self._input_transfer(graph, n, source))
+                node.parameters["tonemap"] = selections[n]["tonemap"]
         identities = graph.identities(source["sha256"], self.tool_versions, overrides)
         states: Dict[str, NodeState] = {}
         for n in graph.order:
@@ -293,6 +304,8 @@ class Executor:
             st.tool, st.capabilities = self._select_tool(node)
             if n in luts:
                 st.lut = luts[n]
+            if n in selections:
+                st.tonemap_selection = selections[n]
             if n in references:
                 st.reference = references[n]
                 st.lut = LutInfo(work_dir / f"{st.identity[:16]}.cube", 0, "")    # written at execution, from the fitted frames
@@ -356,6 +369,22 @@ class Executor:
                 "subtitle_streams": int(meta.get("subtitle_streams") or 0), "data_streams": int(meta.get("data_streams") or 0)}
 
     @staticmethod
+    def _input_transfer(graph: OperationGraph, node_id: str, source: Dict[str, Any]) -> Optional[str]:
+        """The transfer an operation's input will carry, known before anything runs: the source's measured transfer,
+        through STRIP_DOVI (a stream copy that keeps the base layer's tags), or the transfer a RETAG writes. After any
+        other operation (one that re-encodes) it is not known up front: None, which takes the general default."""
+        nid = graph.nodes[node_id].inputs[0]
+        while True:
+            node = graph.nodes[nid]
+            if node.type == "SOURCE":
+                return source.get("color_transfer")
+            if node.type == "RETAG":
+                return RETAG_TAGS[node.parameters["target"]][2]
+            if node.type != "STRIP_DOVI":
+                return None
+            nid = node.inputs[0]
+
+    @staticmethod
     def _source_artifact(path: Path, source: Dict[str, Any]) -> Artifact:
         return Artifact(path, source["duration"], source["width"] or 0, source["height"] or 0, source["pix_fmt"], source["codec"],
                         source["color_space"], source["color_primaries"], source["color_transfer"], source["color_range"],
@@ -382,7 +411,8 @@ class Executor:
                   "input": states[n].node.inputs[0] if states[n].node.inputs else None, "parameters": states[n].node.parameters,
                   "intermediate": str(self._intermediate_path(work_dir, states[n], resolved_source.suffix)),
                   "lut": states[n].lut.to_dict() if states[n].lut else None,
-                  **({states[n].baked.kind: states[n].baked.provenance()} if states[n].baked is not None else {})}
+                  **({states[n].baked.kind: states[n].baked.provenance()} if states[n].baked is not None else {}),
+                  **({"tonemap_selection": states[n].tonemap_selection} if states[n].tonemap_selection is not None else {})}
                  for n in graph.order if states[n].node.type != "SOURCE"]
         return {"plan_id": plan_id, "project_id": project.project_id, "work_dir": str(work_dir), "graph": graph.to_dict(),
                 "source": {k: v for k, v in source.items()},
@@ -769,6 +799,8 @@ class Executor:
                 entry["reference"] = s.reference.to_dict()
             if s.retagged is not None:
                 entry["retagged"] = s.retagged
+            if s.tonemap_selection is not None:
+                entry["tonemap_selection"] = s.tonemap_selection
             if s.measurements:
                 entry["measurements"] = s.measurements
             if s.reencoded is not None:

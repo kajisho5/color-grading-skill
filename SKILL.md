@@ -13,7 +13,8 @@ Rules for a calling agent:
 1. Decide first (video-production-agent): which operation, which LUT, which tonemap curve, which retag target.
    This skill has no defaults for creative parameters that matter (LUT path, retag target) and never guesses which
    colour treatment to apply.
-2. Give explicit, typed parameters: `HDR_TO_SDR` needs nothing but has typed `tonemap`/`peak_nits`/`desat`/`force`;
+2. Give explicit, typed parameters: `HDR_TO_SDR` needs nothing but has typed `tonemap`/`peak_nits`/`desat`/`force`
+   (without `tonemap` the curve follows the input's transfer: `mobius` for HLG, `hable` for PQ and anything else, ADR-28);
    `LUT_APPLY` needs `lut_path`; `RETAG` needs `target`; `PRIMARY_CORRECTION` needs nothing but has typed
    `exposure`/`contrast`/`saturation`/`temperature`/`tint`/`gamma`/`lift`/`gain`/`levels_in_black`/
    `levels_in_white`/`levels_out_black`/`levels_out_white`/`curves`, each independently optional and defaulting to

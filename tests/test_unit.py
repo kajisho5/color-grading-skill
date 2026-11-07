@@ -194,7 +194,8 @@ def test_too_many_operations_rejected():
 # ---- parameter validation per operation type
 def test_hdr_to_sdr_defaults():
     p = validate_parameters("HDR_TO_SDR", {}, "x")
-    assert p == {"tonemap": "hable", "peak_nits": 1000.0, "desat": 0.0, "force": False, "crf": 18, "preset": "medium", "audio_stream": 0}
+    # tonemap None: chosen by the executor from the input's transfer (ADR-28, tests/test_tonemap_default.py)
+    assert p == {"tonemap": None, "peak_nits": 1000.0, "desat": 0.0, "force": False, "crf": 18, "preset": "medium", "audio_stream": 0}
 
 
 def test_hdr_to_sdr_unknown_tonemap_rejected():

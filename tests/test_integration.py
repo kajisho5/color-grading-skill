@@ -84,6 +84,32 @@ def test_hdr_to_sdr_invalid_tonemap_rejected(workspace):
     assert d["error"]["code"] == "INVALID_REQUEST" and code == EXIT_CODES["INVALID_REQUEST"]
 
 
+def test_hdr_to_sdr_default_curve_follows_the_source_transfer(workspace, capabilities):
+    """ADR-28 on real media: no tonemap on an HLG source runs mobius, on a PQ source hable; an explicit curve wins;
+    the curve that ran is the one ffmpeg-skill was given and the one results / provenance record with its rule."""
+    if capabilities.get("filter:zscale") == "unsupported":
+        pytest.skip("filter:zscale not available in this ffmpeg build (needs libzimg; e.g. macOS Homebrew's plain 'ffmpeg' formula omits it)")
+    assert probe(workspace / "hlg.mp4")["color_transfer"] == "arib-std-b67"
+    seen = {}
+    for name, src, params, curve, rule, transfer in (("hlg_default", "hlg.mp4", {}, "mobius", "hlg_default", "arib-std-b67"),
+                                                      ("hlg_hable", "hlg.mp4", {"tonemap": "hable"}, "hable", "request", "arib-std-b67"),
+                                                      ("pq_default", "hdr.mp4", {}, "hable", "default", "smpte2084")):
+        doc = request_doc([op("s", "HDR_TO_SDR", "source", **params)], source={"source_id": "a", "path": src}, project_id=name,
+                          outputs=[{"output_id": "main", "operation": "op:s", "path": f"out/{name}.mp4", "format": "mp4"}])
+        code, d = run(doc)
+        assert code == 0 and d["ok"], full_error(d)
+        want = {"tonemap": curve, "rule": rule, "input_transfer": transfer}
+        r = results(d)["op:s"]
+        assert r["status"] == "completed" and r["artifact"]["hdr"] is False
+        assert r["parameters"]["tonemap"] == curve and r["tonemap_selection"] == want
+        assert f"tonemap={curve}" in " ".join(r["tool_commands_observed"])
+        (entry,) = [e for e in d["outputs"][0]["provenance"]["operations"] if e["type"] == "HDR_TO_SDR"]
+        assert entry["parameters"]["tonemap"] == curve and entry["tonemap_selection"] == want
+        seen[name] = sample_avg_color(workspace / "out" / f"{name}.mp4")
+    # the reason for the HLG default: hable renders HLG darker than mobius (sum of the frame's average R, G, B)
+    assert sum(seen["hlg_default"]) > sum(seen["hlg_hable"]), seen
+
+
 def test_lut_apply_with_deterministic_pixel_check(workspace):
     src_color = sample_avg_color(workspace / "sdr.mp4")
     doc = request_doc([op("l", "LUT_APPLY", "source", lut_path="invert.cube", lut_strength=1.0)])

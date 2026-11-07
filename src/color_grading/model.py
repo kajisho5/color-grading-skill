@@ -59,6 +59,28 @@ OUTPUT_FORMATS: Dict[str, Dict[str, Any]] = {
 
 X264_PRESETS = ("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo")
 TONEMAPS = ("hable", "mobius", "reinhard", "bt2390", "clip", "linear", "gamma")
+# HDR_TO_SDR's tone-mapping curve when the request gives none (ADR-28): a fixed rule on the transfer of the
+# operation's input, never a look at the picture. HLG (arib-std-b67) gets mobius: hable makes HLG camera footage
+# (measured: a phone's HLG BT.2020 HEVC clip) clearly too dark, mobius keeps it natural. PQ (smpte2084) and anything
+# else keep hable, ffmpeg-skill/color's own default. An explicit `tonemap` always wins.
+HLG_TRANSFER = "arib-std-b67"
+TONEMAP_DEFAULT = "hable"
+TONEMAP_HLG_DEFAULT = "mobius"
+# tonemap_selection.rule values: which branch chose the curve
+TONEMAP_RULES = {"request": "the request named the curve (always wins)",
+                 "hlg_default": f"no curve in the request and the input transfer is HLG ({HLG_TRANSFER}): {TONEMAP_HLG_DEFAULT}",
+                 "default": f"no curve in the request and the input transfer is not HLG (PQ smpte2084 or anything else): {TONEMAP_DEFAULT}"}
+
+
+def select_tonemap(requested: Optional[str], input_transfer: Optional[str]) -> Dict[str, Any]:
+    """The curve an HDR_TO_SDR runs with and why (ADR-28), recorded as tonemap_selection in results and provenance."""
+    if requested is not None:
+        curve, rule = requested, "request"
+    elif input_transfer == HLG_TRANSFER:
+        curve, rule = TONEMAP_HLG_DEFAULT, "hlg_default"
+    else:
+        curve, rule = TONEMAP_DEFAULT, "default"
+    return {"tonemap": curve, "rule": rule, "input_transfer": input_transfer}
 RETAG_TARGETS = ("bt709", "bt2020-pq", "bt2020-hlg", "bt601")
 # color.py's own curves filter built-in presets (its CURVES_PRESETS, `ffmpeg -h filter=curves`), excluding the
 # filter's own "none" (0): omitting --curves already gets that identity result without a curves filter term.
@@ -103,7 +125,9 @@ _AUDIO_STREAM_PARAM: Dict[str, Dict[str, Any]] = {
 
 OPERATION_TYPES: Dict[str, Dict[str, Any]] = {
     "HDR_TO_SDR": {"description": "Tone-map HDR (PQ/HLG, BT.2020) to SDR BT.709 (ffmpeg-skill/color --to-sdr)", "parameters": {
-        "tonemap": {"type": _STR, "required": False, "enum": list(TONEMAPS), "default": "hable", "description": "tone-mapping curve"},
+        "tonemap": {"type": _STR, "required": False, "enum": list(TONEMAPS), "default": None, "description": "tone-mapping curve; when omitted "
+                    "(None), chosen by the input's transfer: mobius for HLG (arib-std-b67), hable for PQ (smpte2084) and anything else; "
+                    "the choice and its rule are recorded as tonemap_selection in results and provenance"},
         "peak_nits": {"type": _NUM, "required": False, "min": 1.0, "max": 10000.0, "default": 1000.0, "description": "source peak brightness in nits, used for PQ"},
         "desat": {"type": _NUM, "required": False, "min": 0.0, "max": 5.0, "default": 0.0, "description": "tonemap desaturation strength"},
         "force": {"type": _BOOL, "required": False, "default": False, "description": "tone-map even if the source is not tagged HDR (treat as PQ)"},

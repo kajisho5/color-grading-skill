@@ -9,7 +9,8 @@
   Both are present and consistent; exit codes are per error code, starting at 2.
 - **ADR-3 No production defaults for creative parameters.** `lut_path` and `retag.target` have no default: the
   caller decides which LUT and which colour tags. `HDR_TO_SDR`'s `tonemap`/`peak_nits`/`desat` do have defaults
-  (matching ffmpeg-skill/color's own: `hable` / 1000 nits / 0) because they are encode-quality parameters, not a
+  (matching ffmpeg-skill/color's own: `hable` / 1000 nits / 0; since ADR-28 an omitted `tonemap` is `mobius` for an
+  HLG input) because they are encode-quality parameters, not a
   creative decision about *which* colour treatment to apply — the decision to tone-map at all is still the
   caller's (there is no implicit HDR→SDR anywhere in this skill).
 - **ADR-4 One operation, one file, named by identity.** Unlike audio-production-skill's PCM WAV intermediates
@@ -446,3 +447,25 @@
     (`::error::`) instead of ending green, so a resolver that stops producing a version is seen at once.
   - *Effect.* The first push after this resolves the labels merged since v0.4.0; the `feature` PRs make it a minor
     release, 0.5.0.
+- **ADR-28 `HDR_TO_SDR`: the default curve follows the input's transfer (mobius for HLG).** Until 0.5.0 an omitted
+  `tonemap` was always `hable`. A real test on a phone's HLG clip (HEVC, HLG BT.2020, 1080p60) showed `hable` makes
+  HLG camera footage clearly too dark; `mobius` looked natural; `hable` with a 400-nit peak was still worse than
+  `mobius`. The owner approved `mobius` as the HLG default.
+  - *Decision.* When the request gives no `tonemap`, the executor picks it from the transfer the operation's input
+    carries: `arib-std-b67` (HLG) → `mobius`; `smpte2084` (PQ) and anything else → `hable`, unchanged. An explicit
+    `tonemap` always wins, including `hable` on HLG. The input transfer is the source's measured `color_transfer`,
+    followed through `STRIP_DOVI` (stream copy, tags kept) or set by a `RETAG`; after any other operation it is not
+    known before running, so the general default (`hable`) applies and `input_transfer` is recorded as `null`.
+    `force` on an untagged source ("treat as PQ") therefore keeps `hable`.
+  - *A fixed rule, not a judgement.* It reads one measured tag, never the picture, so ADR-3 still holds: the caller
+    decides whether to tone-map, and can always name the curve.
+  - *Record.* Plan steps, results and each provenance operation carry `tonemap_selection {tonemap, rule, input_transfer}`
+    with `rule` = `request` | `hlg_default` | `default`; `parameters.tonemap` holds the curve that ran. The curve is
+    resolved before identities are computed, so an HLG default and an explicit `mobius` share an identity and an
+    intermediate written by 0.5.0 with `hable` is not reused.
+  - *Contract.* `operations[HDR_TO_SDR].parameters.tonemap.default` becomes `null` with the rule in its description,
+    and a new key `hdr_sdr_defaults` states the rule. The pinned `hdr_sdr` block (ADR-26) is left byte-identical:
+    its `tone_mapping_selection` still holds for every explicit curve, and video-production-agent treats a change there
+    as breaking. A parameter's `default` is outside its breaking set, and its `check_contract` still passes (the
+    parameter stays a `string`). The agent sends no `tonemap` for HDR_TO_SDR, so its HLG sources get `mobius`.
+  - *Release.* A patch release (0.5.1), inside the agent's accepted 0.5.x range.
