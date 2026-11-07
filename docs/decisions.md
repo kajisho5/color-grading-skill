@@ -551,3 +551,38 @@
     `pix_fmt_pattern`, and gains `keep_alpha`; `provenance_extensions` lists `alpha`. Not a pinned block (ADR-26). For
     a caller this is a behaviour change on a capable checkout: an alpha source that exited 6 now completes, in the
     alpha line.
+- **ADR-31 Reuse: the cache identity includes this skill's version, and an alpha grade is reused only from an entry
+  that recorded the alpha as kept; `hdr_sdr.tone_mapping_selection` says what the executor does.** An addendum to
+  ADR-28 and ADR-30 found after 0.6.0.
+  - *Problem.* An operation's identity was its type, effective parameters, input identity, the tool versions and the
+    source's sha256, not this skill's version, so a 0.6.0 run looked up intermediates a 0.5.x run had written under the
+    same identity. `_reusable` asked a reused LEGALIZE entry for its clamp record (ADR-29) but asked a LUT_APPLY /
+    PRIMARY_CORRECTION entry for nothing about the alpha. A VP9 stream with an alpha layer probes as `yuv420p`
+    (ADR-30), so 0.5.x graded it without `--keep-alpha` and without color's `alpha` step being read, and wrote an
+    opaque intermediate; 0.6.0 reused that file as if it had passed 0.6.0's checks.
+  - *Decision: version in the identity.* `OperationGraph.identities` adds `skill_version` (the package `VERSION`) to
+    every operation's hashed record. An intermediate written by any other version, older or newer, never matches, so
+    a release always re-runs what an earlier one wrote with other checks or less provenance. The manifest already
+    carried `skill_version`; nothing else in its shape changes. The cost is one re-run per operation after an upgrade.
+  - *Decision: alpha record required where the alpha is kept.* When this run grades with the alpha kept (an
+    `alpha_line` is set: LUT_APPLY / PRIMARY_CORRECTION on a source seen as alpha, with `--keep-alpha` detected),
+    an entry is reused only if its manifest has an `alpha` record with `kept: true` and its artifact's `pix_fmt` has an
+    alpha plane; otherwise it is run again (and then verified by color's `alpha` step as on a first run). A source that
+    was opaque has no alpha line, so nothing about alpha is asked of its entries and they are reused as before. Every
+    other operation on an alpha source is refused before planning (ADR-25, ADR-30) and never reaches reuse.
+  - *Not changed.* A source with an alpha layer this skill cannot see (VP9 probed as `yuv420p`) is still graded
+    opaque and caught by color's failed `alpha` step on the run that writes it (ADR-30); within one version such an
+    entry only exists if that step passed or was not reported. Detecting it up front still needs an alpha field from
+    ffmpeg-skill/probe.
+  - *Contract wording.* `hdr_sdr.tone_mapping_selection` said "always an explicit typed parameter ... from the caller;
+    this skill never picks one automatically", which ADR-28 made untrue: with no `tonemap`, HLG selects `mobius` and
+    PQ or any other or unknown transfer selects `hable`. The line now says so (an explicit curve always wins; else the
+    fixed rule on the input's measured transfer, detailed in `hdr_sdr_defaults`; never chosen from the picture).
+    `hdr_sdr` is a block a consumer pins (ADR-26), so this is a deliberate one-line change to it: a consumer holding
+    the 0.4.0 copy sees drift there until it re-pins. `tests/test_contract.py` still compares every other key of every
+    pinned block with the 0.4.0 snapshot and pins the new wording against the constants that implement the rule.
+  - *Tests.* `tests/test_reuse.py`: the identity changes with the skill version and a manifest another version wrote
+    is not reused; LUT_APPLY / PRIMARY_CORRECTION entries without a kept alpha record (missing, `kept: false`,
+    malformed, or an opaque `pix_fmt`) are not reused where the alpha is kept, one with it is, and an opaque source's
+    entry still is.
+  - *Release.* A patch release (0.6.1).

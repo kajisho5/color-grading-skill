@@ -131,10 +131,13 @@ def skill_contract() -> Dict[str, Any]:
                         "source": "ffmpeg-skill/probe (ffprobe); OBSERVED, never inferred", "retag_targets": list(RETAG_TARGETS), "retag_tags": {k: list(v) for k, v in RETAG_TAGS.items()},
                         "note": "measurement of input/output colour information is kept separate from the RETAG / HDR_TO_SDR operations that change it (STEP 4 of the design brief)"},
         "hdr_sdr": {"tonemap_curves": list(TONEMAPS), "peak_nits_range": [1.0, 10000.0], "desat_range": [0.0, 5.0],
-                    "tone_mapping_selection": "always an explicit typed parameter (tonemap curve, peak, desat) from the caller; this skill never picks one automatically",
+                    # ADR-31: reworded to say what 0.5.1 on does (ADR-28); a consumer pinning this block re-pins once
+                    "tone_mapping_selection": "an explicit typed parameter (tonemap curve, peak, desat) from the caller always wins; when the request "
+                                              "gives no tonemap, a fixed rule on the input's measured transfer picks it (hdr_sdr_defaults): mobius "
+                                              "for HLG (arib-std-b67), hable for PQ and any other or unknown transfer; never chosen from the picture",
                     "hdr_detection": "measured via ffmpeg-skill/probe (bt2020_or_hdr, or hdr before 2.0: color_transfer/color_primaries); HDR_TO_SDR refuses a non-HDR source unless force is set"},
-        # ADR-28: the curve HDR_TO_SDR runs with when the request names none. A new key, not part of `hdr_sdr`, which a
-        # consumer pins (ADR-26); it refines that block's tone_mapping_selection: an explicit curve is still always used
+        # ADR-28: the curve HDR_TO_SDR runs with when the request names none, in full (hdr_sdr.tone_mapping_selection
+        # names it in one line, ADR-31): an explicit curve is always used
         "hdr_sdr_defaults": {"tonemap": {"when": "the request gives no tonemap", "by_input_transfer": {HLG_TRANSFER: TONEMAP_HLG_DEFAULT},
                                          "otherwise": TONEMAP_DEFAULT, "explicit_wins": True, "rules": dict(TONEMAP_RULES),
                                          "input_transfer": "the source's measured color_transfer, through STRIP_DOVI, or the transfer a RETAG "
