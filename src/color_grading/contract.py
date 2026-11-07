@@ -12,7 +12,7 @@ from .errors import ERROR_CODES, ERROR_TABLE, EXIT_CODES
 from . import ocio as ocio_mod
 from .executor import ALPHA_PIX_FMT_RE, DURATION_TOLERANCE, REENCODING_OPERATIONS, TOOL_FOR, WORK_DIR_NAME
 from .model import (CUBE_EXTENSIONS, FORBIDDEN_KEYS, ID_RE, MAX_LUT_BYTES, MAX_OPERATIONS, OPERATION_TYPES, OUTPUT_FORMATS, REF_RE,
-                    OPERATION_ALIASES, REQUEST_SCHEMA_ID, RETAG_TAGS, RETAG_TARGETS, TONEMAPS, UNSUPPORTED_OPERATIONS, X264_PRESETS)
+                    HLG_TRANSFER, OPERATION_ALIASES, TONEMAP_DEFAULT, TONEMAP_HLG_DEFAULT, TONEMAP_RULES, REQUEST_SCHEMA_ID, RETAG_TAGS, RETAG_TARGETS, TONEMAPS, UNSUPPORTED_OPERATIONS, X264_PRESETS)
 
 CONTRACT_SCHEMA_ID = f"{SKILL_ID}/contract@{CONTRACT_SCHEMA_VERSION}"
 # request.shape's example type list, exactly as 0.4.0 published it (ADR-26: the `request` block is pinned by consumers)
@@ -131,6 +131,15 @@ def skill_contract() -> Dict[str, Any]:
         "hdr_sdr": {"tonemap_curves": list(TONEMAPS), "peak_nits_range": [1.0, 10000.0], "desat_range": [0.0, 5.0],
                     "tone_mapping_selection": "always an explicit typed parameter (tonemap curve, peak, desat) from the caller; this skill never picks one automatically",
                     "hdr_detection": "measured via ffmpeg-skill/probe (bt2020_or_hdr, or hdr before 2.0: color_transfer/color_primaries); HDR_TO_SDR refuses a non-HDR source unless force is set"},
+        # ADR-28: the curve HDR_TO_SDR runs with when the request names none. A new key, not part of `hdr_sdr`, which a
+        # consumer pins (ADR-26); it refines that block's tone_mapping_selection: an explicit curve is still always used
+        "hdr_sdr_defaults": {"tonemap": {"when": "the request gives no tonemap", "by_input_transfer": {HLG_TRANSFER: TONEMAP_HLG_DEFAULT},
+                                         "otherwise": TONEMAP_DEFAULT, "explicit_wins": True, "rules": dict(TONEMAP_RULES),
+                                         "input_transfer": "the source's measured color_transfer, through STRIP_DOVI, or the transfer a RETAG "
+                                                           "writes; after any other operation it is not known up front (null) and the otherwise "
+                                                           "curve applies",
+                                         "recorded_as": "tonemap_selection {tonemap, rule, input_transfer} in plan steps, results and provenance; "
+                                                        "parameters.tonemap holds the curve that ran"}},
         "alpha": {"preserved_by": ["RETAG", "STRIP_DOVI"], "refused_for": list(REENCODING_OPERATIONS), "pix_fmt_pattern": ALPHA_PIX_FMT_RE.pattern,
                   "policy": "a source with an alpha plane is refused (UNSUPPORTED_FORMAT, reason alpha_not_preserved) for every operation that re-encodes "
                             "through ffmpeg-skill/color, which writes no alpha; a stream copy keeps it and an output without it fails validation (alpha_lost). "
@@ -168,7 +177,8 @@ def skill_contract() -> Dict[str, Any]:
         # any change there as a protocol change that makes this skill unavailable until it re-pins (its ADR-045; ADR-26)
         "provenance_extensions": {"per_operation": ["lut (also OCIO_TRANSFORM, MATCH_CAMERA)", "ocio (OCIO_TRANSFORM)", "retagged (OCIO_TRANSFORM)",
                                                     "reference (MATCH_CAMERA)", "measurements.delta_e2000 / fit / frames (MATCH_CAMERA)",
-                                                    "legalize (LEGALIZE: profile, limits, knee, lut_sha256, out_of_range_share {measured: false, reason})"],
+                                                    "legalize (LEGALIZE: profile, limits, knee, lut_sha256, out_of_range_share {measured: false, reason})",
+                                                    "tonemap_selection (HDR_TO_SDR: tonemap, rule request | hlg_default | default, input_transfer)"],
                                   "identity": "OCIO_TRANSFORM: the config's serialized sha256 and the baked LUT's sha256; MATCH_CAMERA: the reference video's sha256; "
                                               "LEGALIZE: the LUT's sha256"},
         "request_types": {"operation_types": sorted(OPERATION_TYPES), "aliases": sorted(OPERATION_ALIASES),
