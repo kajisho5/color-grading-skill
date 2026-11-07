@@ -60,7 +60,11 @@ PYTHON_CAPABILITIES = (ocio_mod.CAPABILITY,)
 # capabilities read from the located ffmpeg-skill's contract by the adapter (SkillInfo.features), not from its doctor:
 # capability -> feature key
 CHECKOUT_CAPABILITIES = {"ffmpeg-skill/color:retag-h264-vui": "retag_rewrites_h264_tags", "ffmpeg-skill/look": "look_tool",
-                         "ffmpeg-skill/color:lut-bt709-legs": "lut_legs_bt709"}
+                         "ffmpeg-skill/color:lut-bt709-legs": "lut_legs_bt709",
+                         # optional: used where supported, never required by an operation (TOOL_FOR); ADR-29, ADR-30
+                         "ffmpeg-skill/check:levels": "check_tool", "ffmpeg-skill/color:legalize": "color_legalize",
+                         "ffmpeg-skill/color:keep-alpha": "color_keep_alpha"}
+OPTIONAL_CHECKOUT_CAPABILITIES = ("ffmpeg-skill/check:levels", "ffmpeg-skill/color:legalize", "ffmpeg-skill/color:keep-alpha")
 
 
 # pixel formats that carry an alpha plane (FFmpeg's names): yuva*, gbrap*, ya8/ya16, rgba/bgra/argb/abgr and their 64-bit forms
@@ -68,6 +72,24 @@ ALPHA_PIX_FMT_RE = re.compile(r"^(yuva|gbrap|ya(8|16)|rgba|bgra|argb|abgr)")
 # operations that re-encode through ffmpeg-skill/color's H.264 4:2:0 path (no alpha plane exists there, ADR-25); RETAG
 # and STRIP_DOVI are stream copies, checked on their output instead
 REENCODING_OPERATIONS = ("HDR_TO_SDR", "LUT_APPLY", "PRIMARY_CORRECTION", "OCIO_TRANSFORM", "MATCH_CAMERA", "LEGALIZE")
+# the ones ffmpeg-skill/color --keep-alpha can run on an alpha source (its --lut and --correct), ADR-30: the alpha is
+# split off, never graded, and merged back into an alpha line. The others stay refused on an alpha source
+ALPHA_GRADING_OPERATIONS = ("LUT_APPLY", "PRIMARY_CORRECTION")
+# the alpha line (color --alpha-codec) per codec of the operation's input, so an editing master stays in its own family
+# (lossless qtrle / PNG stay lossless); anything else becomes ProRes 4444. Each line's containers among this skill's
+# output formats (a .webm is not one, so VP9 with alpha is kept only in .mkv)
+ALPHA_LINE_FOR_CODEC = {"prores": "prores4444", "qtrle": "qtrle", "png": "png", "vp9": "vp9"}
+ALPHA_LINE_DEFAULT = "prores4444"
+ALPHA_LINE_EXTENSIONS = {"prores4444": (".mov", ".mkv"), "qtrle": (".mov",), "png": (".mov", ".mkv"), "vp9": (".mkv",)}
+# how the source's colour is taken and written beside its alpha: straight, as ffmpeg-skill/color takes every source.
+# A premultiplied source is not un-premultiplied before the grade (ffmpeg-skill has no such step), ADR-30
+ALPHA_MODE = "straight"
+
+
+def alpha_line(codec: Optional[str], ext: str) -> Optional[str]:
+    """The alpha line an alpha source of this codec is graded into, or None when no line fits the container."""
+    line = ALPHA_LINE_FOR_CODEC.get(str(codec or ""), ALPHA_LINE_DEFAULT)
+    return line if ext.lower() in ALPHA_LINE_EXTENSIONS[line] else None
 
 
 def has_alpha(pix_fmt: Optional[str]) -> bool:
@@ -128,6 +150,8 @@ class NodeState:
     reference: Optional[LutInfo] = None            # MATCH_CAMERA: the reference video (path, size, sha256)
     retagged: Optional[bool] = None                # OCIO_TRANSFORM: whether a --retag pass was needed for the destination's tags
     tonemap_selection: Optional[Dict[str, Any]] = None   # HDR_TO_SDR: the curve run and the rule that chose it (ADR-28)
+    alpha_line: Optional[str] = None               # LUT_APPLY / PRIMARY_CORRECTION on an alpha source: color --alpha-codec (ADR-30)
+    alpha: Optional[Dict[str, Any]] = None         # ... and what was kept and verified (provenance `alpha`)
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {"node_id": self.node.node_id, "operation_id": self.identity, "type": self.node.type,
@@ -145,6 +169,8 @@ class NodeState:
             d["retagged"] = self.retagged
         if self.tonemap_selection is not None:
             d["tonemap_selection"] = self.tonemap_selection
+        if self.alpha is not None:
+            d["alpha"] = self.alpha
         d["tool_commands_observed"] = list(self.tool_commands)
         d["measurements"] = self.measurements
         if self.reencoded is not None:
@@ -203,15 +229,36 @@ class Executor:
             raise ColorError("INVALID_INPUT", f"source {project.source.source_id!r} has no video stream", {"source_id": project.source.source_id, "reason": "no_video_stream"})
 
         source_ext = resolved_source.suffix.lower()
+        line: Optional[str] = None
         if source["alpha"]:
-            # ffmpeg-skill/color writes H.264 4:2:0 (or ProRes 422) for every re-encoding mode: the alpha plane would be
-            # dropped without a word. Refused before anything runs; nothing here can keep it (ADR-25)
-            lossy = sorted(op.op_id for op in project.operations if op.type in REENCODING_OPERATIONS)
+            # Without --keep-alpha ffmpeg-skill/color writes H.264 4:2:0 (or ProRes 422) for every re-encoding mode: the
+            # alpha plane would be dropped (ADR-25). With it, LUT_APPLY / PRIMARY_CORRECTION grade the colour and keep the
+            # alpha in an alpha line (ADR-30); every other re-encoding operation is still refused before anything runs
+            keep = self._supported("ffmpeg-skill/color:keep-alpha")
+            line = alpha_line(source["codec"], source_ext) if keep else None
+            graded = ALPHA_GRADING_OPERATIONS if line else ()
+            lossy = sorted(op.op_id for op in project.operations if op.type in REENCODING_OPERATIONS and op.type not in graded)
             if lossy:
-                raise ColorError("UNSUPPORTED_FORMAT", f"source {project.source.source_id!r} has an alpha channel ({source['pix_fmt']}); operation(s) {lossy} "
-                                 "re-encode through ffmpeg-skill/color, which writes no alpha, so the alpha would be lost. Grade the fill without its "
-                                 "alpha deliberately (e.g. export it first), or wait for an alpha-preserving ffmpeg-skill path",
-                                 {"reason": "alpha_not_preserved", "pix_fmt": source["pix_fmt"], "op_ids": lossy})
+                if not keep:
+                    why = ("re-encode through ffmpeg-skill/color, which writes no alpha here (this ffmpeg-skill has no --keep-alpha), so the alpha "
+                           "would be lost. Grade the fill without its alpha deliberately (e.g. export it first), or update ffmpeg-skill")
+                elif line is None:
+                    why = (f"would need an alpha line, and none fits the {source_ext} container ({source['codec']} source); this skill does not "
+                           "convert containers: rewrap it as .mov or .mkv first (ffmpeg-skill/export)")
+                else:
+                    why = (f"cannot keep an alpha: only {list(ALPHA_GRADING_OPERATIONS)} grade with the alpha kept (ffmpeg-skill/color "
+                           "--keep-alpha); the others write an opaque picture. Export the fill without its alpha deliberately first")
+                raise ColorError("UNSUPPORTED_FORMAT", f"source {project.source.source_id!r} has an alpha channel ({source['pix_fmt']}); operation(s) {lossy} {why}",
+                                 {"reason": "alpha_not_preserved", "pix_fmt": source["pix_fmt"], "op_ids": lossy,
+                                  "keep_alpha": {"available": keep, "operations": list(ALPHA_GRADING_OPERATIONS), "alpha_codec": line}})
+            luts_on_rgb = sorted(op.op_id for op in project.operations if op.type == "LUT_APPLY")
+            if line and luts_on_rgb and not str(source["pix_fmt"]).startswith("yuva"):
+                # measured (ADR-30): ffmpeg-skill/color's --lut legs write BT.709 limited-range Y'CbCr, and on an RGB alpha
+                # source the alpha line converts that back to RGB with another matrix on some FFmpeg builds (6.1: an
+                # identity LUT moved 0x7f3ebf to 0x7a2fba). The alpha is kept and no fringe appears; the colour can shift
+                self.warnings.append(f"LUT_APPLY {luts_on_rgb} on an RGB alpha source ({source['pix_fmt']}): ffmpeg-skill/color --lut's colour legs can "
+                                     "shift colours on the way back to the RGB alpha line with some FFmpeg builds (BT.709 written, another matrix read); "
+                                     "the alpha is kept. Check the colour, or grade a Y'CbCr alpha master (ProRes 4444) instead")
 
         input_paths = {str(resolved_source)}
         outputs: Dict[str, Path] = {}
@@ -274,10 +321,19 @@ class Executor:
                                  f"({op.parameters['output_tags']}) cannot be guaranteed; update ffmpeg-skill", {"op_id": op.op_id, "reason": "retag_cannot_rewrite_tags",
                                  "ffmpeg_skill": info.version}, retryable=False)
             overrides[f"op:{op.op_id}"] = {"config": b.config["sha256"], "lut_sha256": b.sha256}
+        clamp = self._supported("ffmpeg-skill/color:legalize")
+        measure = self._supported("ffmpeg-skill/check:levels")
         for op in project.operations:
             if op.type == "LEGALIZE":
-                baked[f"op:{op.op_id}"] = legalize_mod.bake(op.parameters)
-                overrides[f"op:{op.op_id}"] = {"lut_sha256": baked[f"op:{op.op_id}"].sha256}
+                b = legalize_mod.bake(op.parameters)
+                # ADR-29: the soft clip and, where color has --legalize, the Y'CbCr clamp after 4:2:0 in the same encode;
+                # the clamp changes the written pixels, so it is part of the identity
+                b.clamp = ({"applied": True, "tool": "ffmpeg-skill/color --legalize", "standard": b.profile, "verification": None}
+                           if clamp else None)
+                if measure:
+                    b.share = {"measured": False, "reason": legalize_mod.SHARES_PLANNED}
+                baked[f"op:{op.op_id}"] = b
+                overrides[f"op:{op.op_id}"] = {"lut_sha256": b.sha256, "legal_clamp": b.profile if clamp else None}
         # MATCH_CAMERA: the reference video is an input like the source (input PathPolicy), identified by its content
         references: Dict[str, LutInfo] = {}
         for op in project.operations:
@@ -306,6 +362,8 @@ class Executor:
                 st.lut = luts[n]
             if n in selections:
                 st.tonemap_selection = selections[n]
+            if line is not None and node.type in ALPHA_GRADING_OPERATIONS:
+                st.alpha_line = line
             if n in references:
                 st.reference = references[n]
                 st.lut = LutInfo(work_dir / f"{st.identity[:16]}.cube", 0, "")    # written at execution, from the fitted frames
@@ -399,6 +457,11 @@ class Executor:
             raise ColorError("TOOL_ERROR", f"{node.type} needs capabilities that are not available: {missing}", {"node_id": node.node_id, "missing": missing}, retryable=False)
         return tool, caps
 
+    def _supported(self, cap: str) -> bool:
+        """An optional capability (OPTIONAL_CHECKOUT_CAPABILITIES) is used only when detected as supported: unknown
+        falls back to what works without it."""
+        return self.capabilities.get(cap) == "supported"
+
     def _capability_available(self, cap: str) -> bool:
         """unknown counts as available: the tool run reports the truth; only a detected 'unsupported' blocks planning."""
         return self.capabilities.get(cap, "unknown") != "unsupported"
@@ -412,7 +475,8 @@ class Executor:
                   "intermediate": str(self._intermediate_path(work_dir, states[n], resolved_source.suffix)),
                   "lut": states[n].lut.to_dict() if states[n].lut else None,
                   **({states[n].baked.kind: states[n].baked.provenance()} if states[n].baked is not None else {}),
-                  **({"tonemap_selection": states[n].tonemap_selection} if states[n].tonemap_selection is not None else {})}
+                  **({"tonemap_selection": states[n].tonemap_selection} if states[n].tonemap_selection is not None else {}),
+                  **({"alpha": {"keep_alpha": True, "alpha_codec": states[n].alpha_line, "alpha_mode": ALPHA_MODE}} if states[n].alpha_line else {})}
                  for n in graph.order if states[n].node.type != "SOURCE"]
         return {"plan_id": plan_id, "project_id": project.project_id, "work_dir": str(work_dir), "graph": graph.to_dict(),
                 "source": {k: v for k, v in source.items()},
@@ -446,6 +510,8 @@ class Executor:
         if node.type in ("OCIO_TRANSFORM", "MATCH_CAMERA", "LEGALIZE"):
             assert st.lut is not None
             args = [src, "--lut", self._lut_arg(st.lut.path)]
+            if node.type == "LEGALIZE" and st.baked is not None and st.baked.clamp is not None:
+                args += ["--legalize", st.baked.profile]     # the clamp after 4:2:0, same encode (ADR-29)
             if hdr_input:
                 # the LUT was baked for the source space the caller named (e.g. Rec.2100-PQ): ffmpeg-skill refuses an
                 # HDR-tagged input to --lut without --force, which exists for exactly this case
@@ -455,7 +521,7 @@ class Executor:
         if node.type == "LUT_APPLY":
             assert st.lut is not None
             args = [src, "--lut", self._lut_arg(st.lut.path), "--lut-strength", fmt_num(p["lut_strength"]),
-                    "--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], "-o", o]
+                    "--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], *self._alpha_args(st), "-o", o]
             return args
         if node.type == "RETAG":
             return [src, "--retag", p["target"], "--audio-stream", str(p["audio_stream"]), "-o", o]
@@ -469,9 +535,17 @@ class Executor:
                     "--levels-out-black", str(p["levels_out_black"]), "--levels-out-white", str(p["levels_out_white"])]
             if p["curves"] is not None:
                 args += ["--curves", p["curves"]]
-            args += ["--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], "-o", o]
+            args += ["--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], *self._alpha_args(st), "-o", o]
             return args
         raise ColorError("INTERNAL_ERROR", f"no argv builder for {node.type}")
+
+    @staticmethod
+    def _alpha_args(st: NodeState) -> List[str]:
+        """color --keep-alpha for an operation on an alpha source (ADR-30): the line picked from the input's codec, the
+        colour taken and written straight. Every value is a table member, never request text."""
+        if not st.alpha_line:
+            return []
+        return ["--keep-alpha", "--alpha-codec", st.alpha_line, "--alpha-mode", ALPHA_MODE]
 
     @staticmethod
     def _lut_arg(lut_path: Path) -> str:
@@ -526,11 +600,14 @@ class Executor:
             cwd = str(st.lut.path.parent) if st.lut is not None else None
             run = self.skill.run_tool("color", argv, timeout, cwd=cwd)
             self._absorb(st, run)
+            self._check_tool_verification(st, run, graded)
             if node.type == "OCIO_TRANSFORM":
                 self._tag_destination(st, graded, out_path, timeout)
             st.artifact = self._validate_artifact(out_path, st, source)
             if node.type == "MATCH_CAMERA":
                 self._match_residual(st, out_path, work_dir, timeout)
+            if node.type == "LEGALIZE":
+                self._measure_levels(st, upstream, timeout)
         except ColorError:
             self._remove_partial(out_path)
             if graded != out_path:
@@ -540,6 +617,7 @@ class Executor:
                                         "input_hash": st.input_hash, "lut": st.lut.to_dict() if st.lut else None, "artifact": st.artifact.to_dict(),
                                         "measurements": st.measurements, "reencoded": st.reencoded, "dropped_non_av_streams": st.dropped_non_av_streams,
                                         "retagged": st.retagged, **({st.baked.kind: st.baked.provenance()} if st.baked is not None else {}),
+                                        **({"alpha": st.alpha} if st.alpha is not None else {}),
                                         "tool": f"ffmpeg-skill/{st.tool}", "tool_versions": dict(self.tool_versions),
                                         "skill": SKILL_ID, "skill_version": VERSION}, indent=2, sort_keys=True), encoding="utf-8")
         st.status = "completed"
@@ -553,6 +631,44 @@ class Executor:
             st.reencoded = bool(run.data["reencoded"])
         if "dropped_non_av_streams" in run.data:
             st.dropped_non_av_streams = bool(run.data["dropped_non_av_streams"])
+
+    def _check_tool_verification(self, st: NodeState, run: ToolRun, written: Path) -> None:
+        """Read the verification steps ffmpeg-skill/color reports for what this skill relies on: `alpha` (the written
+        alpha against the source's, ADR-30) and `legal_levels` (the clamp's measurement of the written file, ADR-29).
+        color completes with `verified: false` when one fails; here that is a VALIDATION_ERROR, never a pass."""
+        steps = [s for s in run.data.get("verification") or [] if isinstance(s, dict)]
+        alpha_step = next((s for s in steps if s.get("step") == "alpha"), None)
+        legal = next((s for s in steps if s.get("step") == "legal_levels"), None)
+        what = f"{st.node.type} {st.node.node_id}"
+        if st.alpha_line:
+            st.alpha = {"kept": bool(alpha_step and alpha_step.get("ok")), "alpha_codec": run.data.get("alpha_codec", st.alpha_line),
+                        "alpha_mode": run.data.get("alpha_mode", ALPHA_MODE), "source_colour": "taken as straight (not un-premultiplied)",
+                        "tool": "ffmpeg-skill/color --keep-alpha", "verification": alpha_step}
+            if alpha_step is None:
+                raise ColorError("VALIDATION_ERROR", f"{what}: ffmpeg-skill/color --keep-alpha reported no alpha verification step",
+                                 {"reason": "alpha_unverified", "path": str(written)})
+        if alpha_step is not None and not alpha_step.get("ok"):
+            raise ColorError("VALIDATION_ERROR", f"{what}: ffmpeg-skill/color's alpha check failed ({alpha_step.get('reason') or 'alpha differs from the source'})",
+                             {"reason": "alpha_lost" if alpha_step.get("reason") == "alpha_dropped" else "alpha_mismatch", "path": str(written),
+                              "step": alpha_step})
+        if st.baked is not None and getattr(st.baked, "clamp", None) is not None:
+            st.baked.clamp = {**st.baked.clamp, "verification": legal, "residual": run.data.get("legalize", {}).get("output", {}).get("out_of_range_pct")
+                              if isinstance(run.data.get("legalize"), dict) and isinstance(run.data["legalize"].get("output"), dict) else None}
+            if legal is None or not legal.get("ok"):
+                raise ColorError("VALIDATION_ERROR", f"{what}: the clamped file is not within {st.baked.profile} legal levels by ffmpeg-skill/color's own "
+                                 f"measurement ({(legal or {}).get('reason') or (legal or {}).get('worst_frame') or 'no legal_levels step reported'})",
+                                 {"reason": "legal_levels_failed", "path": str(written), "step": legal})
+
+    def _measure_levels(self, st: NodeState, upstream: NodeState, timeout: Optional[float]) -> None:
+        """LEGALIZE's report (ADR-29): the shares of luma / chroma samples outside the profile's limits on the input and
+        on the written file, both by ffmpeg-skill/check --levels. Not measured (with the reason) on a checkout without it."""
+        assert st.baked is not None and st.artifact is not None and upstream.artifact is not None
+        if not self._supported("ffmpeg-skill/check:levels"):
+            st.baked.share = {"measured": False, "reason": legalize_mod.SHARES_NOT_MEASURED}
+            return
+        before = self.skill.levels(str(upstream.artifact.path), st.baked.profile, timeout)
+        after = self.skill.levels(str(st.artifact.path), st.baked.profile, timeout)
+        st.baked.share = legalize_mod.share_report(st.baked.profile, before, after)
 
     @staticmethod
     def _write_baked_lut(st: NodeState) -> None:
@@ -640,6 +756,9 @@ class Executor:
         art = m.get("artifact") or {}
         if art.get("path") != str(out_path) or out_path.stat().st_size != art.get("size") or sha256_file(str(out_path)) != art.get("sha256"):
             return False
+        prev = m.get("legalize") or {}
+        if st.node.type == "LEGALIZE" and not (isinstance(prev.get("out_of_range_share"), dict) and isinstance(prev.get("clamp"), dict)):
+            return False   # written before the shares and the clamp were recorded (ADR-29): run it again rather than report less
         st.artifact = Artifact(out_path, float(art["duration"]), int(art["width"]), int(art["height"]), art.get("pix_fmt"), art.get("codec"),
                                art.get("color_space"), art.get("color_primaries"), art.get("color_transfer"), art.get("color_range"),
                                bool(art.get("hdr")), bool(art.get("dolby_vision")), int(art["size"]), art["sha256"])
@@ -647,6 +766,10 @@ class Executor:
         st.reencoded = m.get("reencoded")
         st.dropped_non_av_streams = m.get("dropped_non_av_streams")
         st.retagged = m.get("retagged")
+        st.alpha = m.get("alpha")
+        if st.node.type == "LEGALIZE" and st.baked is not None:
+            st.baked.share = dict(prev["out_of_range_share"])
+            st.baked.clamp = dict(prev["clamp"]) if prev["clamp"].get("applied") else None
         if st.node.type == "MATCH_CAMERA" and isinstance(m.get("lut"), dict):
             st.lut = LutInfo(Path(m["lut"]["path"]), int(m["lut"]["size"]), m["lut"]["sha256"])
         st.tool_commands = []
@@ -710,7 +833,10 @@ class Executor:
             if got != want:
                 raise ColorError("VALIDATION_ERROR", f"{what}: output colour tags {got} do not match the destination's {want} ({st.node.parameters['output_tags']})",
                                  {"reason": "destination_tags_mismatch", "path": str(path), "got": list(got), "want": list(want)})
-        if st.node.type in ("LUT_APPLY", "OCIO_TRANSFORM", "MATCH_CAMERA", "LEGALIZE") and video.get("pix_fmt") != "yuv420p":
+        if st.alpha_line and not has_alpha(video.get("pix_fmt")):
+            raise ColorError("VALIDATION_ERROR", f"{what}: output pixel format {video.get('pix_fmt')!r} has no alpha plane (alpha line {st.alpha_line})",
+                             {"reason": "alpha_lost", "path": str(path), "pix_fmt": video.get("pix_fmt")})
+        if not st.alpha_line and st.node.type in ("LUT_APPLY", "OCIO_TRANSFORM", "MATCH_CAMERA", "LEGALIZE") and video.get("pix_fmt") != "yuv420p":
             raise ColorError("VALIDATION_ERROR", f"{what}: output pixel format {video.get('pix_fmt')!r} is not 'yuv420p'", {"reason": "pix_fmt_mismatch", "path": str(path)})
         # subtitle/data-stream survival: ffmpeg-skill >= 0.12.1 tries to keep a source's subtitle/data streams
         # through every re-encoding colour operation and says so honestly (dropped_non_av_streams) when it could
@@ -801,6 +927,8 @@ class Executor:
                 entry["retagged"] = s.retagged
             if s.tonemap_selection is not None:
                 entry["tonemap_selection"] = s.tonemap_selection
+            if s.alpha is not None:
+                entry["alpha"] = s.alpha
             if s.measurements:
                 entry["measurements"] = s.measurements
             if s.reencoded is not None:

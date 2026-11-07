@@ -13,7 +13,10 @@
 
 Which ffmpeg-skill tools are used, and for what (docs/ffmpeg-skill.md):
   probe   source facts and every artifact's validation
-  color   HDR_TO_SDR (--to-sdr), LUT_APPLY (--lut), RETAG (--retag), STRIP_DOVI (--strip-dovi), PRIMARY_CORRECTION (--correct)"""
+  color   HDR_TO_SDR (--to-sdr), LUT_APPLY (--lut), RETAG (--retag), STRIP_DOVI (--strip-dovi), PRIMARY_CORRECTION (--correct);
+          optional flags where the checkout has them: --legalize (LEGALIZE's clamp, ADR-29), --keep-alpha (ADR-30)
+  look    MATCH_CAMERA's frames (optional)
+  check   LEGALIZE's out-of-range shares, `--levels` (optional, ADR-29)"""
 from __future__ import annotations
 
 import json
@@ -37,7 +40,13 @@ KNOWN_CONTRACT_VERSION = KNOWN_CONTRACT_VERSIONS[0]   # the oldest; the registry
 ENV_DIR_KEYS = ("COLOR_GRADING_FFMPEG_SKILL_DIR", "VIDEO_AGENT_FFMPEG_SKILL_DIR")
 REQUIRED_TOOLS = ("probe", "color")
 # optional: a checkout without it (or without these flags) only loses the operations that need it (MATCH_CAMERA, ADR-23)
-OPTIONAL_TOOL_FLAGS: Dict[str, Tuple[str, ...]] = {"look": ("input", "output", "at", "width", "no_timecode", "json")}
+OPTIONAL_TOOL_FLAGS: Dict[str, Tuple[str, ...]] = {"look": ("input", "output", "at", "width", "no_timecode", "json"),
+                                                   # LEGALIZE's before / after shares (ADR-29); without it they are not measured
+                                                   "check": ("input", "platform", "no_loudness", "levels", "levels_window", "levels_tolerance", "json")}
+# optional flags of a required tool: feature key -> flags that must all be present. Without them only what needs the
+# feature falls back (LEGALIZE without its clamp, ADR-29; an alpha source refused as before, ADR-30)
+OPTIONAL_FLAGS: Dict[str, Dict[str, Tuple[str, ...]]] = {"color": {"color_legalize": ("legalize",),
+                                                                   "color_keep_alpha": ("keep_alpha", "alpha_codec", "alpha_mode")}}
 TOOLS_USED = REQUIRED_TOOLS + tuple(OPTIONAL_TOOL_FLAGS)
 # argparse dests of the ffmpeg-skill tools this adapter emits on every call of some operation type; every one must be
 # present in the located checkout (detected, never inferred from a version number). Together they imply ffmpeg-skill
@@ -58,6 +67,8 @@ FLAGS_USED: Dict[str, Tuple[str, ...]] = {
     **{tool: flags + tuple(f for alts in FLAG_ALTERNATIVES.get(tool, {}).values() for f in alts) for tool, flags in REQUIRED_FLAGS.items()},
     **OPTIONAL_TOOL_FLAGS,
 }
+for _tool, _groups in OPTIONAL_FLAGS.items():
+    FLAGS_USED[_tool] += tuple(f for flags in _groups.values() for f in flags)
 # ffmpeg-skill release whose --lut converts to RGB and back with one matrix (its #410; before it, BT.709 in and BT.601
 # out). A behaviour fix with no flag to detect, so it is read from the version: reported by doctor for every LUT
 # operation, and required by MATCH_CAMERA, whose fit is only valid when --lut sees the RGB look's frames show (ADR-23)
@@ -237,6 +248,8 @@ def check_tools(tools: Dict[str, Dict[str, Any]]) -> Tuple[List[str], Dict[str, 
             caps = (spec.get("capabilities") or {}).get("optional") if isinstance(spec.get("capabilities"), dict) else None
             features["retag_rewrites_h264_tags"] = (any(isinstance(c, dict) and c.get("capability") == "bsf:h264_metadata" for c in caps)
                                                     if isinstance(caps, list) else None)
+            for key, flags in OPTIONAL_FLAGS.get(tool, {}).items():
+                features[key] = all(f in props for f in flags)
             if "video_required" in spec and spec.get("video_required") is not True:
                 problems.append("ffmpeg-skill/color does not declare video_required")
     for tool, flags in OPTIONAL_TOOL_FLAGS.items():
@@ -430,6 +443,26 @@ class FfmpegSkill:
             raise ColorError("TOOL_ERROR", f"ffmpeg-skill/look reported no frame PNG for {os.path.basename(video)} at {at:.3f}s",
                              {"reason": "no_frame", "outputs": outs})
         return paths[0]
+
+    def levels(self, path: str, standard: str, timeout: Optional[float] = None) -> Tuple[Optional[Dict[str, Any]], str]:
+        """ffmpeg-skill/check --levels on one file: (its `levels` document, "") or (None, why not). The row's own
+        tolerance is set to 100 % so it never fails the run: the shares are reported here, not judged (LEGALIZE's
+        clamp has its own verification step, ADR-29). `--platform custom --no-loudness` keeps the other rows to the
+        cheap ones; check exits non-zero when one of those fails, and the `levels` document is still read then."""
+        argv = [sys.executable, self.script("check"), path, "--platform", "custom", "--no-loudness", "--levels", standard,
+                "--levels-window", "10", "--levels-tolerance", "100", "--json"]
+        code, out, err, seconds = self._popen(argv, timeout or self.timeout)
+        data = _parse_json(out)
+        tail = "\n".join(err.strip().splitlines()[-12:])
+        self.runs.append(ToolRun("check", argv, code, data, tail, seconds, list(data.get("commands", [])) if isinstance(data.get("commands"), list) else []))
+        doc = data.get("levels")
+        if isinstance(doc, dict) and isinstance(doc.get("out_of_range_pct"), dict):
+            return doc, ""
+        row = next((c for c in data.get("checks") or [] if isinstance(c, dict) and c.get("check") == "legal levels"), None)
+        if row is not None:
+            return None, f"ffmpeg-skill/check --levels: {row.get('value')} ({row.get('reason') or 'no reason given'})"
+        msg = (data.get("error") or {}).get("message") if isinstance(data.get("error"), dict) else None
+        return None, f"ffmpeg-skill/check --levels returned no levels document (exit {code}): {msg or tail or 'no message'}"
 
     def probe(self, path: str, timeout: Optional[float] = None) -> Dict[str, Any]:
         """ffmpeg-skill/probe prints its document directly (no status envelope)."""

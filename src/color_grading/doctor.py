@@ -13,11 +13,14 @@ from .adapter import LUT_LEGS_FIXED_IN, FfmpegSkill
 from .adapter import version_tuple as _version_tuple
 from .errors import ColorError
 from . import ocio as ocio_mod
-from .executor import CHECKOUT_CAPABILITIES, PYTHON_CAPABILITIES, TOOL_FOR
+from .executor import CHECKOUT_CAPABILITIES, OPTIONAL_CHECKOUT_CAPABILITIES, PYTHON_CAPABILITIES, TOOL_FOR
 from .model import OPERATION_TYPES, OUTPUT_FORMATS, UNSUPPORTED_OPERATIONS
 from .security import PathPolicy
 
 DOCTOR_SCHEMA_ID = f"{SKILL_ID}/doctor@{DOCTOR_SCHEMA_VERSION}"
+OPTIONAL_USE = {"ffmpeg-skill/check:levels": "LEGALIZE: out-of-range shares before / after (otherwise reported as not measured)",
+                "ffmpeg-skill/color:legalize": "LEGALIZE: Y'CbCr clamp after the 4:2:0 conversion in the same encode (otherwise the soft clip alone)",
+                "ffmpeg-skill/color:keep-alpha": "LUT_APPLY / PRIMARY_CORRECTION on an alpha source, alpha kept (otherwise refused, alpha_not_preserved)"}
 # capabilities used across the implemented operations, beyond the base ffmpeg/ffprobe pair
 ALL_CAPABILITIES = sorted({c for _, extra in TOOL_FOR.values() for c in extra if c not in PYTHON_CAPABILITIES and c not in CHECKOUT_CAPABILITIES})
 
@@ -118,6 +121,8 @@ def doctor_report(ffmpeg_skill_dir: Optional[str] = None, workspace: Optional[st
         problems.append("ffmpeg-skill: " + e.message)
     caps = capability_status(info, ffdoc)
     checks["capabilities"] = caps
+    # used where supported, required by no operation: without one, only what it adds is missing (ADR-29, ADR-30)
+    checks["optional_capabilities"] = {cap: {"status": caps.get(cap, "unknown"), "used_for": OPTIONAL_USE[cap]} for cap in OPTIONAL_CHECKOUT_CAPABILITIES}
     oc = ocio_mod.status()
     checks["ocio"] = {"status": "ok" if oc["available"] else "missing", "module": ocio_mod.MODULE, "version": oc["version"],
                       "optional": True, "needed_by": sorted(t for t, (_, extra) in TOOL_FOR.items() if ocio_mod.CAPABILITY in extra),
