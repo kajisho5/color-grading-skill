@@ -469,3 +469,85 @@
     as breaking. A parameter's `default` is outside its breaking set, and its `check_contract` still passes (the
     parameter stays a `string`). The agent sends no `tonemap` for HDR_TO_SDR, so its HLG sources get `mobius`.
   - *Release.* A patch release (0.5.1), inside the agent's accepted 0.5.x range.
+- **ADR-29 `LEGALIZE`: the out-of-range shares are measured by ffmpeg-skill/check `--levels`, and the clamp after
+  4:2:0 runs in the same encode through color `--legalize`, where the located ffmpeg-skill has them.** Completes
+  ECOSYSTEM_ROADMAP.md step 7; supersedes ADR-24's "the shares are not reported" and its proposal, which ffmpeg-skill
+  3.2.3 implemented.
+  - *Detected, not assumed.* `check` is an optional tool (`input`, `--platform`, `--no-loudness`, `--levels`,
+    `--levels-window`, `--levels-tolerance`, `--json`; capability `ffmpeg-skill/check:levels`) and `--legalize` an
+    optional flag of `color` (`ffmpeg-skill/color:legalize`), both read from the checkout's contract like every other
+    flag (ADR-19). Neither is in any operation's required capabilities: on a checkout without them LEGALIZE runs as
+    before (the soft clip alone; `out_of_range_share: {measured: false, reason}`), and doctor lists both under
+    `optional_capabilities`. Only a detected `supported` turns one on; `unknown` keeps the fallback.
+  - *One encode.* `color --lut <soft clip> --legalize <profile>`: the soft clip keeps highlight detail, and the clamp
+    after the 8-bit 4:2:0 conversion catches what the chroma downsampling and the RGB legs put back out. color measures
+    its own file (`legal_levels` step, at most 1 % of one frame's luma or chroma samples out); a failed or missing step
+    is a `VALIDATION_ERROR` (`legal_levels_failed`), never a pass. The step and color's residual shares are recorded
+    as `legalize.clamp {applied, tool, standard, verification, residual}`. The profile names are the same in both
+    skills (`bt709`, `ebu-r103`). The clamp changes the pixels, so its profile (or `null`) joins the identity.
+  - *Before and after.* The operation's input and the written file are each measured with `check --levels <profile>
+    --levels-tolerance 100 --platform custom --no-loudness`: the row never fails the call, other rows are the cheap
+    ones, and the `levels` document is read even when check exits non-zero for another row. Provenance keeps per file
+    `frames`, `bit_depth`, `legal`, `out_of_range_pct {y, u, v, chroma}`, `brng_pct`, `worst_frame`, `min`, `max`,
+    `window_seconds`, `windows` (10 s); `out_of_range_share.measured` is true only when both files were measured (an
+    RGB picture is reported unmeasured with check's reason). The shares are reported, not judged: the clamp's step
+    judges the written file.
+  - *Result on the fixture* (`super_white.mp4`): `bt709` luma 12.1597 % → 0 %, chroma 0 → 0; `ebu-r103` (luma 14–241,
+    chroma 5–251) luma 8.7776 % → 0 %. The test counts every sample of both files itself (rawvideo) and checks the
+    reported shares against its own count.
+  - *Reuse.* A manifest written before the shares and the clamp were recorded is not reused: the step runs again
+    rather than report less. A reused report that is unmeasured (no check then, or a file it could not measure) is
+    measured again when check is available now, and the manifest keeps the new report.
+  - *A measurement that cannot finish* (check times out or fails to start) leaves the shares `measured: false` with
+    the reason; the already validated file is still delivered. A cancellation stays a cancellation.
+  - *Contract.* Additive: `legalize` (what the clamp and the measurement need and record), `optional_capabilities`,
+    `ffmpeg_skill.optional_flags`, `ffmpeg_skill.flags_used.check`, `dependencies[0].optional_tools` gains
+    `ffmpeg-skill/check`, and `provenance_extensions` describes the new `legalize` keys. The pinned blocks (ADR-26) are
+    unchanged.
+- **ADR-30 Alpha-aware grading: LUT_APPLY and PRIMARY_CORRECTION keep an alpha source's alpha through ffmpeg-skill/color
+  `--keep-alpha`, where the located ffmpeg-skill has it.** ECOSYSTEM_ROADMAP.md step 8; replaces ADR-25's refusal for
+  these two operations on such a checkout, and keeps it everywhere else.
+  - *What color does.* `--keep-alpha` (with `--lut` or `--correct`) splits the alpha off, grades the colour at 4:4:4,
+    merges the untouched alpha back and writes an alpha line (`--alpha-codec`) with the source's colour tags; its
+    `alpha` step compares the written alpha with the source's frame by frame. Capability
+    `ffmpeg-skill/color:keep-alpha` (flags `keep_alpha`, `alpha_codec`, `alpha_mode`), optional as in ADR-29.
+  - *Line.* Chosen from the codec of the operation's input, so an editing master stays in its family: ProRes → ProRes
+    4444, qtrle → qtrle, PNG → PNG, VP9 → VP9 (only `.mkv`, `.webm` is not an output format here), anything else →
+    ProRes 4444. The container must hold the line (this skill does not convert containers): an alpha source in `.mp4`
+    is refused (`alpha_not_preserved`, `keep_alpha.alpha_codec: null`).
+  - *Still refused.* HDR_TO_SDR (color's `--keep-alpha` does not take `--to-sdr`), LEGALIZE (color refuses `--legalize`
+    with `--keep-alpha`: the alpha line converts the clamped picture again; a broadcast delivery is opaque),
+    OCIO_TRANSFORM and MATCH_CAMERA (their `--retag` / frame-fit steps assume the H.264 line). The refusal now carries
+    `keep_alpha {available, operations, alpha_codec}`, and its message says whether to update ffmpeg-skill, rewrap
+    the container, or export the fill first.
+  - *Verified.* color's `alpha` step must be present and pass, else `VALIDATION_ERROR` (`alpha_unverified`,
+    `alpha_lost` for `alpha_dropped`, `alpha_mismatch`); a failed `alpha` step is also read on a source this skill does
+    not see as alpha. A VP9 stream with an alpha layer probes as `yuv420p` through ffmpeg-skill/probe, which reports no
+    alpha field, and this skill runs no ffprobe of its own: such a source is graded without `--keep-alpha`, color's
+    `alpha` step fails, and the run is a `VALIDATION_ERROR` (`alpha_lost`) whose message says to export it to ProRes
+    4444 / qtrle / PNG first. Detecting it up front needs an alpha field in ffmpeg-skill/probe (proposal).
+  - *Encoder.* An alpha grade requires its line's encoder (`encoder:prores_ks`, `qtrle`, `png`, `libvpx-vp9`) in place
+    of `encoder:libx264`; doctor reports those encoders.
+  - *Precision.* color splits the alpha at 8 bits. A deeper source alpha (ProRes 4444's 10 / 12 / 16-bit, `gbrap16`,
+    `rgba64`) comes back within one 8-bit code, which color's own step accepts (2 of 255). It is not refused: ProRes
+    4444 is the usual alpha master and one 8-bit code is below what a composite shows; it is recorded instead
+    (`alpha.precision_bits: 8`) and named in a warning. Bit-identical alpha holds for 8-bit alpha (qtrle, PNG, rgba). The output must store an alpha plane, and the
+    `yuv420p` check of LUT_APPLY does not apply to an alpha line. Results and provenance carry `alpha {kept,
+    precision_bits, alpha_codec, alpha_mode, source_colour, tool, verification}`; plan steps carry `alpha {keep_alpha, alpha_codec,
+    alpha_mode}`.
+  - *Measured.* qtrle fixture (one straight colour under a 0..255 alpha ramp), LUT: the alpha is bit-identical in every
+    frame and the graded colour is one colour from transparent to opaque pixels (no fringe). ProRes 4444 fixture
+    (10-bit alpha): within one 8-bit code in every sample (color's split runs at 8 bits). A chain LUT_APPLY →
+    PRIMARY_CORRECTION keeps it bit-identical.
+  - *Not done.* A premultiplied source is not un-premultiplied before the grade: color takes every source as straight
+    (`--alpha-mode` only describes the written colour), so this skill writes `straight` and records
+    `source_colour: taken as straight`. The roadmap's premultiplied case needs an un-premultiply step in ffmpeg-skill
+    (proposal: `--alpha-mode premultiplied` on the input side, un-premultiply before the grade and premultiply after).
+    Also measured: on an RGB alpha source (qtrle / PNG) color's `--lut` legs write BT.709 limited-range Y'CbCr that the
+    RGB line reads back with another matrix on FFmpeg 6.1 (an identity LUT moved 0x7f3ebf to 0x7a2fba; `--correct` is
+    exact there). The alpha and the absence of a fringe are unaffected; LUT_APPLY on an RGB alpha source adds a warning
+    naming it (proposal for ffmpeg-skill: convert back with the matrix the legs wrote).
+  - *Contract.* `alpha` keeps `preserved_by`, `refused_for` (the list for a checkout without `--keep-alpha`),
+    `pix_fmt_pattern`, and gains `keep_alpha`; `provenance_extensions` lists `alpha`. Not a pinned block (ADR-26). For
+    a caller this is a behaviour change on a capable checkout: an alpha source that exited 6 now completes, in the
+    alpha line.

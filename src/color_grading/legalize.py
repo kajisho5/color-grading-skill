@@ -12,13 +12,18 @@ through a soft clip that never leaves the profile's RGB limits:
              -1 %..103 %, which keeps both (luma is a weighted mean of R, G, B)
 
 Each channel is unchanged up to the knee and approaches the upper limit with a tanh shoulder above it (slope 1 at
-the knee, never reaching the limit). Below 0 the clip is hard: lut3d clamps its input there (see DOMAIN)."""
+the knee, never reaching the limit). Below 0 the clip is hard: lut3d clamps its input there (see DOMAIN).
+
+Where the located ffmpeg-skill offers them (docs/decisions.md ADR-29), the same encode also clamps every Y'CbCr sample
+after the 4:2:0 conversion (color --legalize, measured by color itself as its `legal_levels` step), and the shares of
+luma and chroma samples out of range are measured on the input and on the written file by check --levels. Without
+them the soft clip runs alone and the shares are reported as not measured, as before."""
 from __future__ import annotations
 
 import hashlib
 import math
-from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Tuple
 
 from .ocio import cube_text, grid
 
@@ -32,8 +37,12 @@ PROFILES: Dict[str, Dict[str, Any]] = {
 DOMAIN = (0.0, 1.25)
 DEFAULT_KNEE = 0.95
 DEFAULT_LUT_SIZE = 65
-SHARES_NOT_MEASURED = ("ffmpeg-skill exposes no per-pixel measurement of out-of-range Y'CbCr (its signalstats use reports "
-                       "luma levels for --correct only, no BRNG share), and this skill runs no ffmpeg of its own")
+SHARES_NOT_MEASURED = ("this ffmpeg-skill has no check --levels (a per-sample measurement of out-of-range Y'CbCr), and this "
+                       "skill runs no ffmpeg of its own")
+SHARES_PLANNED = "measured on the input and on the written file by ffmpeg-skill/check --levels when the operation runs"
+CLAMP_UNAVAILABLE = "this ffmpeg-skill/color has no --legalize: the soft clip runs alone, with no Y'CbCr clamp after the 4:2:0 conversion"
+# what is kept of one check --levels document per file (the whole document minus what the standard already says)
+LEVELS_KEYS = ("frames", "bit_depth", "legal", "out_of_range_pct", "brng_pct", "worst_frame", "min", "max", "window_seconds", "windows")
 
 
 def soft_clip(x: float, lo: float, hi: float, knee: float) -> float:
@@ -54,12 +63,32 @@ class LegalLut:
     profile: str
     knee: float
     lut_size: int
+    # set by the executor: whether color --legalize clamps in the same encode (and its verification), and the
+    # measured shares; until then the plan's description of what will happen
+    clamp: Optional[Dict[str, Any]] = None
+    share: Dict[str, Any] = field(default_factory=lambda: {"measured": False, "reason": SHARES_NOT_MEASURED})
 
     def provenance(self) -> Dict[str, Any]:
         lo, hi = PROFILES[self.profile]["rgb"]
         return {"profile": self.profile, "reference": PROFILES[self.profile]["reference"], "rgb_limits": [lo, hi], "knee": self.knee,
                 "domain": list(DOMAIN), "lut_size": self.lut_size, "lut_sha256": self.sha256,
-                "out_of_range_share": {"measured": False, "reason": SHARES_NOT_MEASURED}}
+                "clamp": dict(self.clamp) if self.clamp is not None else {"applied": False, "reason": CLAMP_UNAVAILABLE},
+                "out_of_range_share": dict(self.share)}
+
+
+def levels_summary(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """The part of a check --levels document provenance keeps for one file (measured: True)."""
+    return {"measured": True, **{k: doc[k] for k in LEVELS_KEYS if k in doc}}
+
+
+def share_report(profile: str, before: Tuple[Optional[Dict[str, Any]], str], after: Tuple[Optional[Dict[str, Any]], str]) -> Dict[str, Any]:
+    """`out_of_range_share` from the two check --levels results ((document, "") or (None, reason)): measured only
+    when both files were measured; each side says what it is either way."""
+    sides = {name: (levels_summary(doc) if doc is not None else {"measured": False, "reason": why})
+             for name, (doc, why) in (("before", before), ("after", after))}
+    return {"measured": all(s["measured"] for s in sides.values()), "tool": "ffmpeg-skill/check --levels", "standard": profile,
+            "unit": "percent of samples (luma; chroma = Cb and Cr at their own resolution) outside the standard's limits, every frame",
+            **sides}
 
 
 def bake(params: Dict[str, Any]) -> LegalLut:

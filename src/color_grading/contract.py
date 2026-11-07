@@ -7,10 +7,12 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from . import CONTRACT_SCHEMA_VERSION, DOCTOR_SCHEMA_VERSION, PACKAGE_NAME, REQUEST_SCHEMA_VERSION, RESPONSE_SCHEMA_VERSION, SKILL_ID, VERSION
-from .adapter import FLAG_ALTERNATIVES, FLAGS_USED, KNOWN_CONTRACT_VERSION, KNOWN_CONTRACT_VERSIONS, OPTIONAL_TOOL_FLAGS, REQUIRED_FLAGS, REQUIRED_TOOLS, TOOLS_USED
+from .adapter import FLAG_ALTERNATIVES, FLAGS_USED, KNOWN_CONTRACT_VERSION, KNOWN_CONTRACT_VERSIONS, OPTIONAL_FLAGS, OPTIONAL_TOOL_FLAGS, REQUIRED_FLAGS, REQUIRED_TOOLS, TOOLS_USED
 from .errors import ERROR_CODES, ERROR_TABLE, EXIT_CODES
+from . import legalize as legalize_mod
 from . import ocio as ocio_mod
-from .executor import ALPHA_PIX_FMT_RE, DURATION_TOLERANCE, REENCODING_OPERATIONS, TOOL_FOR, WORK_DIR_NAME
+from .executor import (ALPHA_GRADING_OPERATIONS, ALPHA_LINE_DEFAULT, ALPHA_LINE_ENCODERS, ALPHA_LINE_EXTENSIONS, ALPHA_LINE_FOR_CODEC, ALPHA_MODE, ALPHA_PIX_FMT_RE,
+                       DURATION_TOLERANCE, OPTIONAL_CHECKOUT_CAPABILITIES, REENCODING_OPERATIONS, TOOL_FOR, WORK_DIR_NAME)
 from .model import (CUBE_EXTENSIONS, FORBIDDEN_KEYS, ID_RE, MAX_LUT_BYTES, MAX_OPERATIONS, OPERATION_TYPES, OUTPUT_FORMATS, REF_RE,
                     HLG_TRANSFER, OPERATION_ALIASES, TONEMAP_DEFAULT, TONEMAP_HLG_DEFAULT, TONEMAP_RULES, REQUEST_SCHEMA_ID, RETAG_TAGS, RETAG_TARGETS, TONEMAPS, UNSUPPORTED_OPERATIONS, X264_PRESETS)
 
@@ -142,8 +144,32 @@ def skill_contract() -> Dict[str, Any]:
                                                         "parameters.tonemap holds the curve that ran"}},
         "alpha": {"preserved_by": ["RETAG", "STRIP_DOVI"], "refused_for": list(REENCODING_OPERATIONS), "pix_fmt_pattern": ALPHA_PIX_FMT_RE.pattern,
                   "policy": "a source with an alpha plane is refused (UNSUPPORTED_FORMAT, reason alpha_not_preserved) for every operation that re-encodes "
-                            "through ffmpeg-skill/color, which writes no alpha; a stream copy keeps it and an output without it fails validation (alpha_lost). "
-                            "Premultiplied / straight alpha handling is not implemented (docs/decisions.md ADR-25)"},
+                            "through ffmpeg-skill/color without keeping the alpha; a stream copy keeps it and an output without it fails validation (alpha_lost). "
+                            "Where ffmpeg-skill/color has --keep-alpha, LUT_APPLY and PRIMARY_CORRECTION grade with the alpha kept (keep_alpha; "
+                            "docs/decisions.md ADR-25, ADR-30)",
+                  # ADR-30: additive keys; `refused_for` above stays the list for an ffmpeg-skill without --keep-alpha
+                  "keep_alpha": {"operations": list(ALPHA_GRADING_OPERATIONS), "requires": "ffmpeg-skill/color:keep-alpha (--keep-alpha, --alpha-codec, --alpha-mode)",
+                                 "refused_for_with_keep_alpha": [t for t in REENCODING_OPERATIONS if t not in ALPHA_GRADING_OPERATIONS],
+                                 "alpha_codec_by_input_codec": dict(ALPHA_LINE_FOR_CODEC), "alpha_codec_default": ALPHA_LINE_DEFAULT,
+                                 "containers": {k: list(v) for k, v in ALPHA_LINE_EXTENSIONS.items()}, "alpha_mode": ALPHA_MODE,
+                                 "encoders": dict(ALPHA_LINE_ENCODERS), "precision_bits": 8,
+                                 "precision": "ffmpeg-skill/color keeps the alpha at 8 bits: a deeper source alpha comes back within one 8-bit "
+                                              "code (a warning says so); an 8-bit alpha is bit-identical",
+                                 "not_detected": "a VP9 stream with an alpha layer probes as yuv420p through ffmpeg-skill/probe: it is graded without "
+                                                 "--keep-alpha and color's failed alpha step makes it a VALIDATION_ERROR (alpha_lost)",
+                                 "premultiplied_source": "not un-premultiplied: the source's colour is taken as straight, as ffmpeg-skill/color takes it",
+                                 "verification": "ffmpeg-skill/color's alpha step (written alpha against the source's, every frame) must pass, else "
+                                                 "VALIDATION_ERROR (alpha_lost / alpha_mismatch / alpha_unverified); the output must store an alpha plane",
+                                 "output": "the alpha line's pixel format (e.g. yuva444p12le for ProRes 4444) with the source's colour tags, not yuv420p",
+                                 "recorded_as": "alpha {kept, precision_bits, alpha_codec, alpha_mode, source_colour, tool, verification} in results and provenance"}},
+        # ADR-29: what LEGALIZE adds where the located ffmpeg-skill offers it; without it, the soft clip alone and no shares
+        "legalize": {"clamp": {"requires": "ffmpeg-skill/color:legalize", "how": "color --lut <soft clip> --legalize <profile>: one encode, clamped after the 4:2:0 conversion",
+                               "verification": "ffmpeg-skill/color's legal_levels step must pass (at most 1 % of one frame's luma or chroma samples out), else "
+                                               "VALIDATION_ERROR legal_levels_failed", "identity": "the clamp's profile (or null without it) is part of the operation identity"},
+                     "out_of_range_share": {"requires": "ffmpeg-skill/check:levels", "measured_on": ["the operation's input (before)", "the written file (after)"],
+                                            "keys": list(legalize_mod.LEVELS_KEYS), "not_measured": "{measured: false, reason} on a checkout without check --levels, "
+                                                                                                    "or when a file cannot be measured (an RGB picture)"}},
+        "optional_capabilities": list(OPTIONAL_CHECKOUT_CAPABILITIES),
         "x264": {"crf_range": [0, 51], "presets": list(X264_PRESETS)},
         "geometry": {"changes": "no implemented operation changes duration or frame geometry", "duration_tolerance": DURATION_TOLERANCE,
                     "work_dir": f"<workspace>/{WORK_DIR_NAME}/<project_id>/"},
@@ -159,6 +185,7 @@ def skill_contract() -> Dict[str, Any]:
                          "tools_used": list(TOOLS_USED), "flags_used": {k: list(v) for k, v in FLAGS_USED.items()},
                          "required_flags": {k: list(v) for k, v in REQUIRED_FLAGS.items()},
                          "flag_alternatives": {t: {g: list(a) for g, a in groups.items()} for t, groups in FLAG_ALTERNATIVES.items()},
+                         "optional_flags": {t: {g: list(a) for g, a in groups.items()} for t, groups in OPTIONAL_FLAGS.items()},
                          "probe_hdr_key": "bt2020_or_hdr when present (ffmpeg-skill >= 2.0), else hdr: BT.2020 primaries or a PQ/HLG transfer either way"},
         "request": {"schema": REQUEST_SCHEMA_ID, "id_pattern": ID_RE.pattern, "reference_pattern": REF_RE.pattern, "forbidden_fields": sorted(FORBIDDEN_KEYS),
                     "max_operations": MAX_OPERATIONS,
@@ -177,10 +204,13 @@ def skill_contract() -> Dict[str, Any]:
         # any change there as a protocol change that makes this skill unavailable until it re-pins (its ADR-045; ADR-26)
         "provenance_extensions": {"per_operation": ["lut (also OCIO_TRANSFORM, MATCH_CAMERA)", "ocio (OCIO_TRANSFORM)", "retagged (OCIO_TRANSFORM)",
                                                     "reference (MATCH_CAMERA)", "measurements.delta_e2000 / fit / frames (MATCH_CAMERA)",
-                                                    "legalize (LEGALIZE: profile, limits, knee, lut_sha256, out_of_range_share {measured: false, reason})",
+                                                    "legalize (LEGALIZE: profile, limits, knee, lut_sha256, clamp {applied, tool, standard, verification, residual} "
+                                                    "or {applied: false, reason}, out_of_range_share {measured, tool, standard, unit, before, after} "
+                                                    "or {measured: false, reason})",
+                                                    "alpha (LUT_APPLY / PRIMARY_CORRECTION on an alpha source: kept, alpha_codec, alpha_mode, verification)",
                                                     "tonemap_selection (HDR_TO_SDR: tonemap, rule request | hlg_default | default, input_transfer)"],
                                   "identity": "OCIO_TRANSFORM: the config's serialized sha256 and the baked LUT's sha256; MATCH_CAMERA: the reference video's sha256; "
-                                              "LEGALIZE: the LUT's sha256"},
+                                              "LEGALIZE: the LUT's sha256 and the clamp's profile (null without the clamp)"},
         "request_types": {"operation_types": sorted(OPERATION_TYPES), "aliases": sorted(OPERATION_ALIASES),
                           "note": "request.shape lists the 0.4.0 types as an example; every type above is accepted"},
         "schema_versions": {"contract": str(CONTRACT_SCHEMA_VERSION), "request": str(REQUEST_SCHEMA_VERSION), "response": str(RESPONSE_SCHEMA_VERSION), "doctor": str(DOCTOR_SCHEMA_VERSION)},
