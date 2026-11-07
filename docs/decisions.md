@@ -566,8 +566,8 @@
     carried `skill_version`; nothing else in its shape changes. The cost is one re-run per operation after an upgrade.
   - *Decision: alpha record required where the alpha is kept.* When this run grades with the alpha kept (an
     `alpha_line` is set: LUT_APPLY / PRIMARY_CORRECTION on a source seen as alpha, with `--keep-alpha` detected),
-    an entry is reused only if its manifest has an `alpha` record with `kept: true` and its artifact's `pix_fmt` has an
-    alpha plane; otherwise it is run again (and then verified by color's `alpha` step as on a first run). A source that
+    an entry is reused only if its manifest has an `alpha` record with `kept: true` and a passing `verification`
+    (color's `alpha` step, `ok: true`), and its artifact's `pix_fmt` has an alpha plane; otherwise it is run again (and then verified by color's `alpha` step as on a first run). A source that
     was opaque has no alpha line, so nothing about alpha is asked of its entries and they are reused as before. Every
     other operation on an alpha source is refused before planning (ADR-25, ADR-30) and never reaches reuse.
   - *Not changed.* A source with an alpha layer this skill cannot see (VP9 probed as `yuv420p`) is still graded
@@ -583,6 +583,6 @@
     pinned block with the 0.4.0 snapshot and pins the new wording against the constants that implement the rule.
   - *Tests.* `tests/test_reuse.py`: the identity changes with the skill version and a manifest another version wrote
     is not reused; LUT_APPLY / PRIMARY_CORRECTION entries without a kept alpha record (missing, `kept: false`,
-    malformed, or an opaque `pix_fmt`) are not reused where the alpha is kept, one with it is, and an opaque source's
+    malformed, without a passing verification, or an opaque `pix_fmt`) are not reused where the alpha is kept, one with it is, and an opaque source's
     entry still is.
   - *Release.* A patch release (0.6.1).

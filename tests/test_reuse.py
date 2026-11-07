@@ -2,7 +2,7 @@
 
 The cache identity includes this skill's version, so a manifest another version wrote (with that version's checks and
 recorded provenance) never matches. LUT_APPLY / PRIMARY_CORRECTION on a source whose alpha this run keeps is reused only
-from an entry whose `alpha` record says the alpha was kept; one without it (an opaque grade) is run again. An entry for a
+from an entry whose `alpha` record says the alpha was kept and verified; one without it (an opaque grade) is run again. An entry for a
 source that was opaque is reused as before. No ffmpeg needed: the manifests and intermediates are written by the test."""
 import json
 
@@ -80,7 +80,9 @@ def test_a_manifest_another_skill_version_wrote_is_not_reused(tmp_path, monkeypa
 # ---- an alpha grade is reused only from an entry that recorded the alpha as kept
 @pytest.mark.parametrize("op_type", ALPHA_GRADING_OPERATIONS)
 @pytest.mark.parametrize("alpha,pix_fmt", [(None, "yuv420p"), (None, "yuva444p10le"), ({**KEPT, "kept": False}, "yuva444p10le"),
-                                           ("kept", "yuva444p10le"), (KEPT, "yuv420p")])
+                                           ("kept", "yuva444p10le"), (KEPT, "yuv420p"),
+                                           ({**KEPT, "verification": None}, "yuva444p10le"),
+                                           ({**KEPT, "verification": {"step": "alpha", "ok": False}}, "yuva444p10le")])
 def test_an_entry_without_a_kept_alpha_record_is_not_reused_where_alpha_is_kept(tmp_path, op_type, alpha, pix_fmt):
     out, manifest = _entry(tmp_path, "i" * 64, op_type, pix_fmt=pix_fmt, alpha=alpha)
     st = _state("i" * 64, op_type)
