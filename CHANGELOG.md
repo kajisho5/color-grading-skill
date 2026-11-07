@@ -1,3 +1,7 @@
+## v0.6.1 - 2026-11-07
+
+- fix: never reuse an intermediate from another skill version, or an alpha grade without a kept-alpha record (#40) (537bc75)
+
 ## v0.6.0 - 2026-11-07
 
 - feat: measured legal levels for LEGALIZE and alpha-aware grading (roadmap steps 7 and 8) (#39) (c78da86)
