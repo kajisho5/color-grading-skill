@@ -589,7 +589,7 @@
     malformed, without a passing verification, or an opaque `pix_fmt`) are not reused where the alpha is kept, one with it is, and an opaque source's
     entry still is.
   - *Release.* A patch release (0.6.1).
-- **ADR-32 Releases: a Dependabot pull request cannot raise the release level; v1.0.0 was withdrawn.** #35 (a
+- **ADR-32 Releases: a Dependabot pull request cannot raise the release level; v1.0.0 stays.** #35 (a
   Dependabot bump of release-drafter from 6.4.0 to 7.10.0) was merged carrying the label `major`. Dependabot puts
   that label on a pull request whose *dependency* moved a major version, as soon as a label named `major` exists
   in the repository; `.github/release-drafter.yml` maps the same label to a major bump of this product, so the
@@ -605,9 +605,8 @@
     stop the semver label added on top, and a later edit of that file would reopen the hole unnoticed. Removing the
     label when it is applied (in the labeler workflow): a missed or failed run would go unnoticed until the next
     accidental release.
-  - *Withdrawal.* v1.0.0 (tag and GitHub Release; nothing was published to a package registry) is deleted by the
-    owner. `pyproject.toml` and `src/color_grading/__init__.py` say 0.6.2 and the v1.0.0 CHANGELOG entry is removed:
-    with the newest tag back at v0.6.1 the release workflow takes its "version already differs from the latest
-    tag" path, releases exactly 0.6.2 whatever the labels say, and writes the 0.6.2 CHANGELOG entry itself.
+  - *v1.0.0 stays.* It was not meant as a major release (no breaking change went into it), but its tag and GitHub
+    Release are public, so it is kept and the 1.x line continues from it; the version files and the v1.0.0
+    CHANGELOG entry are unchanged. From here on a major release happens only when a person applies the label.
   - *Tests.* `tests/test_release_labels.py`.
-  - *Release.* A patch release (0.6.2).
+  - *Release.* A patch release (1.0.1).
