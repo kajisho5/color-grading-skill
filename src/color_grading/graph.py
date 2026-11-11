@@ -4,7 +4,7 @@ Node kinds:
   source node  "source"      the one ColorSource of the project
   op node      "op:<id>"     one ColorOperation (exactly one input: the source or another operation)
 Every node has: node_id, type, inputs (node ids, 0 for source / 1 for an operation), parameters, and an identity:
-sha256 of canonical {type, parameters, input identity, tool version, source fingerprint}, computed by the executor
+sha256 of canonical {type, parameters, input identity, tool version, this skill's version, source fingerprint}, computed by the executor
 once the source fingerprint is known (graph.identities()). Nothing here depends on time or randomness.
 
 Colour operations never branch into more than one input or merge two videos (no MIX / CONCAT analogue exists in
@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
+from . import VERSION
 from .canonical import stable_hash
 from .errors import ColorError
 from .model import ColorProject
@@ -102,7 +103,9 @@ class OperationGraph:
     # ---- identity
     def identities(self, source_fingerprint: str, tool_versions: Dict[str, str], content_overrides: Any = None) -> Dict[str, str]:
         """Deterministic operation identity per node, in topological order. The source contributes its sha256; each
-        operation contributes type + effective parameters + input identity + the tool version that will run it.
+        operation contributes type + effective parameters + input identity + the tool version that will run it + this
+        skill's own version (ADR-31: an intermediate another version of this skill wrote, with that version's checks and
+        recorded provenance, is never reused).
 
         `content_overrides[node_id]` replaces named parameter keys with a content hash before hashing (used for
         LUT_APPLY's `lut_path`, so identity depends on the LUT's bytes, not the path it happened to be read from on
@@ -117,7 +120,7 @@ class OperationGraph:
                 params = dict(node.parameters)
                 params.update(overrides.get(n, {}))
                 ids[n] = stable_hash({"kind": "operation", "type": node.type, "parameters": params,
-                                      "input": ids[node.inputs[0]], "tool_versions": tool_versions})
+                                      "input": ids[node.inputs[0]], "tool_versions": tool_versions, "skill_version": VERSION})
         return ids
 
     def to_dict(self) -> Dict[str, Any]:

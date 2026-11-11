@@ -5,7 +5,7 @@ Written from a read-only audit of this repository on 2026-10-30. Each step below
 
 ## Where it stands
 
-v0.4.0, Python. HDR_TO_SDR, LUT_APPLY, RETAG, STRIP_DOVI, PRIMARY_CORRECTION (exposure ... curves), OCIO_TRANSFORM (step 5), MATCH_CAMERA (step 6), LEGALIZE (step 7, without the shares report). 170 tests, CI on 3 OSes, release workflow.
+v0.4.0, Python. HDR_TO_SDR, LUT_APPLY, RETAG, STRIP_DOVI, PRIMARY_CORRECTION (exposure ... curves), OCIO_TRANSFORM (step 5), MATCH_CAMERA (step 6), LEGALIZE (step 7, shares measured with ffmpeg-skill 3.2.3), alpha-aware LUT_APPLY / PRIMARY_CORRECTION (step 8, straight alpha). 170 tests, CI on 3 OSes, release workflow.
 
 ## What this repository owns
 
@@ -39,14 +39,16 @@ Agent wires 5 color_* skills through color-grading/run, every PRIMARY_CORRECTION
   - なぜ要るか：会場の複数カメラの色の違いを、マルチカムの切り替えで目立たなくできる
   - Done when: a fixture whose camera B is camera A with a known tint and gain matches within ΔE 2 on average
   - Done (ADR-23): `MATCH_CAMERA` (frames by ffmpeg-skill/look, curves or 3×3 matrix fit, LUT applied by `--lut`); on the fixture (B = A with R ×0.86, G ×0.97 + 10, B ×0.90 + 6) ΔE2000 mean 5.19 → 0.50 measured on the written file (whole frame, curves; 9 patches with the matrix 4.81 → 0.25). Needs ffmpeg-skill ≥ 3.1.6 (its `--lut` matrix fix): on older checkouts it is unsupported in doctor and refused
-- [ ] **7. Broadcast legal range and gamut** — LEGALIZE: soft-clip to BT.709 legal levels (8-bit 16-235 / 10-bit 64-940, chroma limits) and report the share of pixels out of range before and after; the limits follow EBU R103 when that profile is asked for
+- [x] **7. Broadcast legal range and gamut** — LEGALIZE: soft-clip to BT.709 legal levels (8-bit 16-235 / 10-bit 64-940, chroma limits) and report the share of pixels out of range before and after; the limits follow EBU R103 when that profile is asked for
   - なぜ要るか：放送局への納品で、レベル外の信号で差し戻されない
   - Done when: a fixture with super-whites ends within range and the report gives both shares
   - Partly done (ADR-24), left unchecked: `LEGALIZE` (profiles `bt709` / `ebu-r103`, a soft-clip LUT over ffmpeg-skill's float RGB) brings the fixture's super-whites / sub-blacks from 12.2 % of luma samples out of 16–235 to 0, chroma 0 → 0 (measured by the test from the written file). **Not met: the report cannot give the shares**: ffmpeg-skill exposes no per-pixel range measurement and this skill runs no ffmpeg itself; provenance says `measured: false`. Needs an ffmpeg-skill legal-range measurement (proposal in ADR-24). Also measured: ffmpeg-skill's float-RGB leg clamps to 0..1 on the way back, so `ebu-r103`'s headroom is never written, and hard saturated edges overshoot chroma after 4:2:0 (testsrc2 ×1.3 chroma: 1.26 % left)
+  - Done (ADR-29): with ffmpeg-skill 3.2.3 on, LEGALIZE runs the soft clip and color `--legalize` (the clamp after 4:2:0) in one encode, and measures both shares with check `--levels` on the input and the written file: the fixture's luma out of 16–235 12.16 % → 0 %, chroma 0 → 0, in provenance (`out_of_range_share.before` / `.after`, `measured: true`) and checked by the test against its own count. On an older ffmpeg-skill the soft clip runs alone and the shares say `measured: false`, as before
 - [ ] **8. Alpha-aware grading** — LUT_APPLY / PRIMARY_CORRECTION on a source with alpha keep the alpha unchanged, and a premultiplied source is un-premultiplied before the correction and premultiplied again after
   - なぜ要るか：テロップや CG の色を変えても、縁が黒ずんだり白く浮いたりしない
   - Done when: a premultiplied fixture's alpha is bit-identical after a LUT, and edge pixels have no dark fringe
   - Not met (ADR-25), left unchecked: ffmpeg-skill/color writes no alpha in any re-encoding mode (measured: `--lut` on ProRes 4444 `yuva444p12le` → H.264 `yuv420p`, reported `verified`), and splitting / un-premultiplying here would mean this skill's own filter graphs. Done instead: an alpha source is refused for every re-encoding operation (`alpha_not_preserved`) rather than silently flattened, stream copies keep the alpha (RETAG measured), and an output that lost it fails validation (`alpha_lost`). Needs an alpha-preserving `color.py` path (proposal in ADR-25)
+  - Partly done (ADR-30), left unchecked: with ffmpeg-skill 3.2.3 on, LUT_APPLY and PRIMARY_CORRECTION grade an alpha source through color `--keep-alpha` (alpha line by input codec: ProRes 4444, qtrle, PNG, VP9); on the qtrle fixture the alpha is bit-identical after a LUT and the graded colour does not depend on the alpha (no fringe). **Not met: a premultiplied source is not un-premultiplied** (ffmpeg-skill takes every source as straight); other re-encoding operations stay refused, and an older ffmpeg-skill keeps ADR-25's refusal
 
 ---
 Engine for every media operation: [ffmpeg-skill](https://github.com/kajisho5/ffmpeg-skill) (3.x, 42 tools, contract_version 2.0; treated as complete, proposals go to Velisa's ROADMAP). Orchestrator: [video-production-agent](https://github.com/kajisho5/video-production-agent).

@@ -12,6 +12,8 @@ ffmpeg directly; the skill under test never does. Every fixture has a known cons
                 to not always reach libx265's VUI signalling on every platform/build (measured: absent on a Windows
                 CI runner's ffmpeg, present on Linux/macOS for the same command) -- the bsf is unconditionally
                 reliable since it edits the bitstream itself
+  hlg.mp4       the same construction as hdr.mp4 with an HLG transfer (transfer_characteristics=18, arib-std-b67):
+                BT.2020 / HLG, as a phone records HDR video -- for HDR_TO_SDR's per-transfer default curve (ADR-28)
   sdr_with_subs.mp4  same video+audio as sdr.mp4 plus one soft `mov_text` subtitle track (muxed from a synthetic
                 .srt), for exercising ffmpeg-skill >= 0.12.1's subtitle-stream-preservation behaviour and this
                 skill's own subtitle-survival check (executor._validate_artifact)
@@ -26,6 +28,9 @@ ffmpeg directly; the skill under test never does. Every fixture has a known cons
                 and super-whites, outside BT.709's 16-235), chroma a smooth +-60 swing around 128 -- for LEGALIZE
   alpha.mov     2 s 160x90 ProRes 4444 with alpha (yuva444p10le): testsrc2 with a left-to-right alpha ramp, as a
                 title or CG element would be delivered -- for the alpha guard (ADR-25)
+  alpha_rle.mov 2 s 160x90 QuickTime Animation (qtrle, argb), one straight colour (0x8040c0) in every pixel under a
+                left-to-right alpha ramp 0..255: lossless, so an alpha kept through a grade can be compared exactly, and
+                a uniform colour shows any fringe (a colour that depends on the alpha) -- for alpha-aware grading (ADR-30)
   audio.wav     2 s mono PCM tone, no video stream (audio-only)
   text.txt      not media
   invert.cube   a 3D LUT (size 2) that exactly inverts every channel (output = 1 - input); trilinear/tetrahedral
@@ -85,9 +90,9 @@ def _run(args):
 def build_all(directory: Path) -> Dict[str, Path]:
     d = Path(directory)
     d.mkdir(parents=True, exist_ok=True)
-    f = {k: d / v for k, v in {"sdr": "sdr.mp4", "sdr_noaudio": "sdr_noaudio.mp4", "hevc_sdr": "hevc_sdr.mp4", "hdr": "hdr.mp4",
+    f = {k: d / v for k, v in {"sdr": "sdr.mp4", "sdr_noaudio": "sdr_noaudio.mp4", "hevc_sdr": "hevc_sdr.mp4", "hdr": "hdr.mp4", "hlg": "hlg.mp4",
                                "sdr_with_subs": "sdr_with_subs.mp4", "multi_audio": "multi_audio.mp4",
-                               "camera_a": "camera_a.mp4", "camera_b": "camera_b.mp4", "super_white": "super_white.mp4", "alpha": "alpha.mov", "audio": "audio.wav", "text": "text.txt", "invert_cube": "invert.cube"}.items()}
+                               "camera_a": "camera_a.mp4", "camera_b": "camera_b.mp4", "super_white": "super_white.mp4", "alpha": "alpha.mov", "alpha_rle": "alpha_rle.mov", "audio": "audio.wav", "text": "text.txt", "invert_cube": "invert.cube"}.items()}
     _run(["-f", "lavfi", "-i", SOLID, "-f", "lavfi", "-i", f"aevalsrc='{TONE}':s=48000", "-t", "3",
           "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", str(f["sdr"])])
     _run(["-f", "lavfi", "-i", SOLID, "-t", "2", "-c:v", "libx264", "-preset", "veryfast", "-pix_fmt", "yuv420p", str(f["sdr_noaudio"])])
@@ -107,6 +112,8 @@ def build_all(directory: Path) -> Dict[str, Path]:
     # BT.2020 nc): reliable on every platform, unlike top-level -colorspace/-color_primaries/-color_trc encode flags
     _run(["-i", str(hdr_base), "-c", "copy", "-bsf:v", "hevc_metadata=colour_primaries=9:transfer_characteristics=16:matrix_coefficients=9:video_full_range_flag=0",
           "-tag:v", "hvc1", "-movflags", "+faststart", str(f["hdr"])])
+    _run(["-i", str(hdr_base), "-c", "copy", "-bsf:v", "hevc_metadata=colour_primaries=9:transfer_characteristics=18:matrix_coefficients=9:video_full_range_flag=0",
+          "-tag:v", "hvc1", "-movflags", "+faststart", str(f["hlg"])])
     hdr_base.unlink()
     lut = ":".join(f"{c}='clip(val*{g}+{o},0,255)'" for c, g, o in zip("rgb", CAMERA_B_GAIN, CAMERA_B_OFFSET))
     for key, chain in (("camera_a", f"format=rgb24,{_TO_709}"), ("camera_b", f"format=rgb24,lutrgb={lut},{_TO_709}")):
@@ -116,6 +123,8 @@ def build_all(directory: Path) -> Dict[str, Path]:
           "-t", "2", "-c:v", "libx264", "-preset", "veryfast", "-crf", "12", str(f["super_white"])])
     _run(["-f", "lavfi", "-i", "testsrc2=s=160x90:rate=25", "-t", "2", "-vf", "format=yuva444p10le,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='1023*X/W'",
           "-c:v", "prores_ks", "-profile:v", "4", "-pix_fmt", "yuva444p10le", str(f["alpha"])])
+    _run(["-f", "lavfi", "-i", "color=c=0x8040c0:s=160x90:rate=25", "-t", "2", "-vf", "format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='255*X/(W-1)'",
+          "-c:v", "qtrle", "-pix_fmt", "argb", str(f["alpha_rle"])])
     _run(["-f", "lavfi", "-i", f"aevalsrc='{TONE}':s=48000:c=mono", "-t", "2", "-c:a", "pcm_s16le", str(f["audio"])])
     f["text"].write_text("not media\n", encoding="utf-8")
     f["invert_cube"].write_text(INVERT_CUBE, encoding="utf-8")

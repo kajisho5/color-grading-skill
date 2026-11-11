@@ -146,7 +146,7 @@ Nothing in this pipeline reasons about the image. Every box is a typed, mechanic
 | `PRIMARY_CORRECTION` | Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint), gamma, three-way shadows/highlights (lift/gain), levels and a curves preset — each an explicit, independently optional, range-checked parameter |
 | `OCIO_TRANSFORM` | OpenColorIO / ACES colour-space conversion (built-in ACES studio / CG configs or a `.ocio` file): source space → destination space, or → display / view, with an optional look. Baked to a 3D LUT by the optional PyOpenColorIO (`pip install 'color-grading-skill[ocio]'`), applied by ffmpeg-skill `--lut`, tagged by `--retag` ([ADR-22](docs/decisions.md)) |
 | `MATCH_CAMERA` | Match this camera to a reference camera from a frame pair the caller names (whole frame or stated patches): per-channel curves or a 3×3 matrix fitted, written as a LUT and applied by ffmpeg-skill `--lut`; residual CIEDE2000 measured before and on the written file ([ADR-23](docs/decisions.md)) |
-| `LEGALIZE` | Soft-clip into BT.709 legal levels (8-bit luma 16–235, chroma 16–240) or the EBU R 103 tolerance, as a LUT over ffmpeg-skill's float RGB (super-whites included); the out-of-range shares are not measured (ffmpeg-skill has no such measurement, [ADR-24](docs/decisions.md)) |
+| `LEGALIZE` | Soft-clip into BT.709 legal levels (8-bit luma 16–235, chroma 16–240) or the EBU R 103 tolerance, as a LUT over ffmpeg-skill's float RGB (super-whites included); with ffmpeg-skill 3.2.3 on, the same encode also clamps after the 4:2:0 conversion (`color --legalize`) and the shares of samples out of range are measured before and after (`check --levels`); older checkouts: the soft clip alone, shares `measured: false` ([ADR-24](docs/decisions.md), [ADR-29](docs/decisions.md)) |
 | `WHITE_BALANCE` *(alias)* | `PRIMARY_CORRECTION` restricted to `temperature` + `tint` (plus `crf`/`preset`/`audio_stream`); resolved to `PRIMARY_CORRECTION` at validation, so plan, identity and provenance name `PRIMARY_CORRECTION` ([ADR-20](docs/decisions.md)) |
 
 Each maps 1:1 onto one mode of `ffmpeg-skill/color`; every operation takes exactly one input and none of them
@@ -181,13 +181,13 @@ source — plus the operation's own measurable effect:
 | Operation | What is verified on the output |
 |---|---|
 | `HDR_TO_SDR` | no longer reports `hdr: true` |
-| `LUT_APPLY` | `pix_fmt == yuv420p` |
+| `LUT_APPLY` | `pix_fmt == yuv420p` (on an alpha source: an alpha plane, see below) |
 | `RETAG` | the exact `(color_space, color_primaries, color_transfer)` triple requested |
 | `STRIP_DOVI` | no Dolby Vision side data present |
 | `OCIO_TRANSFORM` | `pix_fmt == yuv420p` and the destination's exact colour-tag triple; the baked LUT's error against OpenColorIO's own processor on a test chart is recorded in provenance (`accuracy`) |
 | `MATCH_CAMERA` | `pix_fmt == yuv420p`; `measurements.delta_e2000` before / fit / after (after measured on a frame of the written file), reported, not judged |
-| `LEGALIZE` | `pix_fmt == yuv420p`; the range itself is verified by the test suite, not per run (`legalize.out_of_range_share.measured: false`) |
-| *alpha sources* | a source with an alpha plane is refused for every re-encoding operation (ffmpeg-skill/color writes no alpha); a stream copy must keep it (`alpha_lost` otherwise), [ADR-25](docs/decisions.md) |
+| `LEGALIZE` | `pix_fmt == yuv420p`; with `color --legalize`, its `legal_levels` step on the written file must pass (`legal_levels_failed` otherwise); with `check --levels`, the shares out of range on the input and the output are in provenance (`legalize.out_of_range_share.before` / `.after`), reported, not judged |
+| *alpha sources* | with ffmpeg-skill/color `--keep-alpha` (3.2.3 on), `LUT_APPLY` / `PRIMARY_CORRECTION` write an alpha line chosen from the input's codec (ProRes 4444, qtrle, PNG, VP9) and color's `alpha` step must pass (`alpha_lost` / `alpha_mismatch` / `alpha_unverified` otherwise); every other re-encoding operation, and all of them on an older ffmpeg-skill, is refused (`alpha_not_preserved`); a stream copy must keep it (`alpha_lost` otherwise), [ADR-25](docs/decisions.md), [ADR-30](docs/decisions.md) |
 | `PRIMARY_CORRECTION` | no fixed target state (a continuous correction, not a discrete tag); the generic checks above plus ffmpeg-skill's own before/after `measurements` (real signalstats numbers — luminance and saturation averages — never a subjective judgement) |
 
 This caught a real ffmpeg-skill/FFmpeg limitation during development: a stream-copy retag can exit `0` without
@@ -309,6 +309,9 @@ Stated as boundary, not as bugs to be worked around with a private filter string
 - `LUT_APPLY`'s `lut_strength` of exactly `0.0` behaves like `1.0` (full LUT) — ffmpeg-skill's own documented
   behaviour, not something this skill introduces or can fix on its own.
 - No cache eviction: `<workspace>/.color-grading/<project_id>/` grows until the caller removes it.
+- Alpha: the source's colour is taken as straight; a premultiplied source is not un-premultiplied before a grade
+  (ffmpeg-skill has no such step), and `LUT_APPLY` on an RGB alpha source (qtrle / PNG) can shift colours on some FFmpeg
+  builds, with a warning (ADR-30). `LEGALIZE` on an alpha source is refused: a broadcast delivery is opaque.
 
 ## Testing
 

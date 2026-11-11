@@ -1,3 +1,15 @@
+## v0.6.1 - 2026-11-07
+
+- fix: never reuse an intermediate from another skill version, or an alpha grade without a kept-alpha record (#40) (537bc75)
+
+## v0.6.0 - 2026-11-07
+
+- feat: measured legal levels for LEGALIZE and alpha-aware grading (roadmap steps 7 and 8) (#39) (c78da86)
+
+## v0.5.1 - 2026-11-07
+
+- fix: default HDR_TO_SDR to mobius for an HLG input (ADR-28) (#38) (e155caf)
+
 ## v0.5.0 - 2026-11-06
 
 - fix(release): resolve the version with release-drafter v7 dry-run (#37) (9120d76)

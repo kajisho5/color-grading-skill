@@ -171,7 +171,7 @@ def test_contract_and_doctor_declare_match_camera(skill_dir):
     c = skill_contract()
     op = next(o for o in c["operations"] if o["type"] == "MATCH_CAMERA")
     assert "ffmpeg-skill/look" in op["required_capabilities"] and op["parameters"]["model"]["enum"] == list(match.MODELS)
-    assert c["dependencies"][0]["optional_tools"] == ["ffmpeg-skill/look"] and "look" in c["ffmpeg_skill"]["flags_used"]
+    assert c["dependencies"][0]["optional_tools"] == ["ffmpeg-skill/look", "ffmpeg-skill/check"] and "look" in c["ffmpeg_skill"]["flags_used"]
     d = doctor_report(str(skill_dir))
     assert d["checks"]["capabilities"]["ffmpeg-skill/look"] == "supported"
     legs = FfmpegSkill.locate(str(skill_dir)).info().features["lut_legs_bt709"]
