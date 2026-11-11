@@ -1,6 +1,6 @@
 # Shared config for two workflows:
 #   - .github/workflows/pr-labeler.yml   (autolabeler only, on pull_request_target)
-#   - .github/workflows/release.yml      (version-resolver only, dry-run via disable-releaser: true)
+#   - .github/workflows/release.yml      (version-resolver only, `dry-run: true`)
 #
 # Neither workflow uses release-drafter's own draft-release feature: this repo's release.yml
 # does its own version bump / CHANGELOG.md / tag / GitHub Release / publish, reading only the

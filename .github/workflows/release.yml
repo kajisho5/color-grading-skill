@@ -32,7 +32,7 @@ jobs:
       # v7 `dry-run: true` resolves the version from the merged PRs' labels without creating a release. v6.4.0 with
       # `disable-releaser: true` (used until docs/decisions.md ADR-27) skips that resolution altogether, so its
       # `resolved_version` output was always empty and every push after v0.4.0 ended "nothing to release".
-      # pr-labeler.yml stays on v6.4.0: it only applies labels, which v6 does.
+      # pr-labeler.yml uses v7's separate autolabeler action: in v7 the main action no longer applies labels.
       - name: Resolve next version (dry run, no release object created)
         id: drafter
         uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
