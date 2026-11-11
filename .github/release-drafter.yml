@@ -37,6 +37,9 @@ version-resolver:
 # "breaking: ..." or "BREAKING CHANGE" in a description should not, by itself, ship a major version
 # bump. That label -- and therefore a major release -- is applied by hand only, when a human
 # explicitly decides this change is breaking.
+# Dependabot applies `major` on its own to a pull request whose dependency moved a major version;
+# release.yml removes a release-level label a bot put on a Dependabot pull request before it resolves
+# the version (.github/scripts/dependabot_release_labels.py, docs/decisions.md ADR-32).
 autolabeler:
   - label: 'feature'
     branch:

@@ -10,7 +10,9 @@ on:
 
 permissions:
   contents: write
-  pull-requests: read   # release-drafter reads merged-PR labels to resolve the next version
+  # release-drafter reads merged-PR labels to resolve the next version; write, because the step before it takes
+  # release-level labels a bot put on Dependabot pull requests off again (docs/decisions.md ADR-32)
+  pull-requests: write
 
 concurrency:
   group: release
@@ -28,6 +30,14 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # full history: release-drafter needs it, and so does `git log <tag>..HEAD`
+
+      # Dependabot labels a pull request `major` when the dependency it bumps moved a major version, which says nothing
+      # about this product's version. A release-level label on a Dependabot pull request counts only when a person
+      # applied it (ADR-32); a failure here fails the release instead of resolving from unchecked labels.
+      - name: Drop release-level labels a bot put on Dependabot pull requests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/dependabot_release_labels.py
 
       # v7 `dry-run: true` resolves the version from the merged PRs' labels without creating a release. v6.4.0 with
       # `disable-releaser: true` (used until docs/decisions.md ADR-27) skips that resolution altogether, so its
