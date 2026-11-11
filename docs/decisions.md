@@ -589,3 +589,25 @@
     malformed, without a passing verification, or an opaque `pix_fmt`) are not reused where the alpha is kept, one with it is, and an opaque source's
     entry still is.
   - *Release.* A patch release (0.6.1).
+- **ADR-32 Releases: a Dependabot pull request cannot raise the release level; v1.0.0 was withdrawn.** #35 (a
+  Dependabot bump of release-drafter from 6.4.0 to 7.10.0) was merged carrying the label `major`. Dependabot puts
+  that label on a pull request whose *dependency* moved a major version, as soon as a label named `major` exists
+  in the repository; `.github/release-drafter.yml` maps the same label to a major bump of this product, so the
+  release workflow resolved 1.0.0 from 0.6.1 and tagged it, although the only change was a CI pin.
+  - *Decision.* Before release-drafter resolves the version, `release.yml` runs
+    `.github/scripts/dependabot_release_labels.py`: on every pull request authored by `dependabot[bot]` it removes
+    `major`, `breaking`, `minor`, `feature` and `enhancement` unless the newest `labeled` event for that label was
+    made by a person. Pull requests by anyone else are not touched, so the rule in `release-drafter.yml` stands: a
+    major release happens only when a person applies the label, on a Dependabot pull request too. The job's token
+    has `pull-requests: write` for this; a failed API call fails the release instead of resolving from labels that
+    were not checked.
+  - *Rejected.* A `labels:` list in `dependabot.yml`: it sets Dependabot's default labels, it is not documented to
+    stop the semver label added on top, and a later edit of that file would reopen the hole unnoticed. Removing the
+    label when it is applied (in the labeler workflow): a missed or failed run would go unnoticed until the next
+    accidental release.
+  - *Withdrawal.* v1.0.0 (tag and GitHub Release; nothing was published to a package registry) is deleted by the
+    owner. `pyproject.toml` and `src/color_grading/__init__.py` say 0.6.2 and the v1.0.0 CHANGELOG entry is removed:
+    with the newest tag back at v0.6.1 the release workflow takes its "version already differs from the latest
+    tag" path, releases exactly 0.6.2 whatever the labels say, and writes the 0.6.2 CHANGELOG entry itself.
+  - *Tests.* `tests/test_release_labels.py`.
+  - *Release.* A patch release (0.6.2).

@@ -1,7 +1,3 @@
-## v1.0.0 - 2026-11-11
-
-- chore: Bump release-drafter/release-drafter from 6.4.0 to 7.10.0 (#35) (51f3410)
-
 ## v0.6.1 - 2026-11-07
 
 - fix: never reuse an intermediate from another skill version, or an alpha grade without a kept-alpha record (#40) (537bc75)

@@ -10,7 +10,9 @@ on:
 
 permissions:
   contents: write
-  pull-requests: read   # release-drafter reads merged-PR labels to resolve the next version
+  # release-drafter reads merged-PR labels to resolve the next version; write, because the step before it takes
+  # release-level labels a bot put on Dependabot pull requests off again (docs/decisions.md ADR-32)
+  pull-requests: write
 
 concurrency:
   group: release
@@ -33,6 +35,14 @@ jobs:
       # `disable-releaser: true` (used until docs/decisions.md ADR-27) skips that resolution altogether, so its
       # `resolved_version` output was always empty and every push after v0.4.0 ended "nothing to release".
       # pr-labeler.yml uses v7's separate autolabeler action: in v7 the main action no longer applies labels.
+      # Dependabot labels a pull request `major` when the dependency it bumps moved a major version, which says nothing
+      # about this product's version. A release-level label on a Dependabot pull request counts only when a person
+      # applied it (ADR-32); a failure here fails the release instead of resolving from unchecked labels.
+      - name: Drop release-level labels a bot put on Dependabot pull requests
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/dependabot_release_labels.py
+
       - name: Resolve next version (dry run, no release object created)
         id: drafter
         uses: release-drafter/release-drafter@978bb0b30c5ee8cdd332ced253758157150d43f0 # v7.10.0
