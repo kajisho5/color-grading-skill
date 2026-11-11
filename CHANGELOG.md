@@ -1,3 +1,7 @@
+## v1.0.1 - 2026-11-11
+
+- fix(release): Dependabot labels cannot raise the release level (#41) (6850a78)
+
 ## v1.0.0 - 2026-11-11
 
 - chore: Bump release-drafter/release-drafter from 6.4.0 to 7.10.0 (#35) (51f3410)
