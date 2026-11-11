@@ -442,7 +442,10 @@
   resolver.
   - *Decision.* The release workflow resolves with release-drafter v7.10.0 and `dry-run: true` (pinned by SHA, the
     same step the sibling video-editing-skill uses), which computes `resolved_version` and creates no release. The
-    labeler workflow keeps v6.4.0 (`disable-releaser: true` there only means "label, don't draft", which works).
+    labeler workflow kept v6.4.0 at first (`disable-releaser: true` there only means "label, don't draft", which
+    works). It moved to v7.10.0 with the pin bump in #35, as the separate `release-drafter/autolabeler` action: in v7
+    the main action no longer applies labels and has no `disable-releaser` input, so it would try to draft a release
+    from the labeler job.
   - *Guard.* On the auto-bump path an empty resolved version with commits after the latest tag now fails the job
     (`::error::`) instead of ending green, so a resolver that stops producing a version is seen at once.
   - *Effect.* The first push after this resolves the labels merged since v0.4.0; the `feature` PRs make it a minor
