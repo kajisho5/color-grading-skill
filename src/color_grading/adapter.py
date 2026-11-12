@@ -14,7 +14,8 @@
 Which ffmpeg-skill tools are used, and for what (docs/ffmpeg-skill.md):
   probe   source facts and every artifact's validation
   color   HDR_TO_SDR (--to-sdr), LUT_APPLY (--lut), RETAG (--retag), STRIP_DOVI (--strip-dovi), PRIMARY_CORRECTION (--correct);
-          optional flags where the checkout has them: --legalize (LEGALIZE's clamp, ADR-29), --keep-alpha (ADR-30)
+          optional flags where the checkout has them: --legalize (LEGALIZE's clamp, ADR-29), --keep-alpha (ADR-30),
+          --drop-alpha (an alpha source flattened on request, ADR-33)
   look    MATCH_CAMERA's frames (optional)
   check   LEGALIZE's out-of-range shares, `--levels` (optional, ADR-29)"""
 from __future__ import annotations
@@ -44,9 +45,13 @@ OPTIONAL_TOOL_FLAGS: Dict[str, Tuple[str, ...]] = {"look": ("input", "output", "
                                                    # LEGALIZE's before / after shares (ADR-29); without it they are not measured
                                                    "check": ("input", "platform", "no_loudness", "levels", "levels_window", "levels_tolerance", "json")}
 # optional flags of a required tool: feature key -> flags that must all be present. Without them only what needs the
-# feature falls back (LEGALIZE without its clamp, ADR-29; an alpha source refused as before, ADR-30)
+# feature falls back (LEGALIZE without its clamp, ADR-29; an alpha source refused as before, ADR-30; ADR-33)
 OPTIONAL_FLAGS: Dict[str, Dict[str, Tuple[str, ...]]] = {"color": {"color_legalize": ("legalize",),
-                                                                   "color_keep_alpha": ("keep_alpha", "alpha_codec", "alpha_mode")}}
+                                                                   "color_keep_alpha": ("keep_alpha", "alpha_codec", "alpha_mode"),
+                                                                   # an alpha source flattened on request (drop_alpha, ADR-33):
+                                                                   # without the flag color writes the same opaque picture and its
+                                                                   # alpha step reports alpha_dropped, which is then expected
+                                                                   "color_drop_alpha": ("drop_alpha",)}}
 TOOLS_USED = REQUIRED_TOOLS + tuple(OPTIONAL_TOOL_FLAGS)
 # argparse dests of the ffmpeg-skill tools this adapter emits on every call of some operation type; every one must be
 # present in the located checkout (detected, never inferred from a version number). Together they imply ffmpeg-skill

@@ -15,11 +15,20 @@ ADR-19, ADR-21). CI runs against ffmpeg-skill main, 3.0.0, 2.24.1 (the Python 3.
 | `ffmpeg-skill/check` *(optional)* | `LEGALIZE`'s out-of-range shares on its input and output (ADR-29) | `input`, `--platform custom`, `--no-loudness`, `--levels`, `--levels-window`, `--levels-tolerance 100`, `--json` |
 | `ffmpeg-skill/color` | `HDR_TO_SDR` (`--to-sdr`), `LUT_APPLY` (`--lut`), `RETAG` (`--retag`), `STRIP_DOVI` (`--strip-dovi`), `PRIMARY_CORRECTION` (`--correct`), `MATCH_CAMERA` (`--lut` with the LUT this skill fitted), `LEGALIZE` (`--lut` with the soft-clip LUT), `OCIO_TRANSFORM` (`--lut` with the LUT this skill baked, then `--retag` when the destination's tags are not BT.709, ADR-22) | `--to-sdr`, `--lut`, `--retag`, `--strip-dovi`, `--correct` (mutually exclusive, exactly one required — matches this skill's one-operation-per-node model exactly), `--tonemap`, `--peak`, `--desat`, `--force`, `--lut-strength`, `--exposure`, `--contrast`, `--saturation`, `--temperature`, `--tint`, `--gamma`, `--lift`, `--gain`, `--levels-in-black`, `--levels-in-white`, `--levels-out-black`, `--levels-out-white`, `--curves`, `--audio-stream`, `--quality` or `--crf` (whichever the checkout has), `--preset`, `-o`, `--json` |
 
-Optional `color` flags, used only where detected (capabilities `ffmpeg-skill/color:legalize` and
-`ffmpeg-skill/color:keep-alpha`; doctor's `optional_capabilities`): `--legalize` (LEGALIZE's clamp after 4:2:0, in the
-same encode as its `--lut`, ADR-29) and `--keep-alpha` / `--alpha-codec` / `--alpha-mode straight` (LUT_APPLY and
-PRIMARY_CORRECTION on an alpha source, ADR-30). Without them those operations behave as before; their absence is never a
-`fail`. color's `verification` steps `legal_levels` and `alpha` are read: a failed one is a `VALIDATION_ERROR`.
+Optional `color` flags, used only where detected (capabilities `ffmpeg-skill/color:legalize`,
+`ffmpeg-skill/color:keep-alpha` and `ffmpeg-skill/color:drop-alpha`; doctor's `optional_capabilities`): `--legalize`
+(LEGALIZE's clamp after 4:2:0, in the same encode as its `--lut`, ADR-29), `--keep-alpha` / `--alpha-codec` /
+`--alpha-mode straight` (LUT_APPLY and PRIMARY_CORRECTION on an alpha source, ADR-30) and `--drop-alpha` (any re-encode
+of an alpha input when the request sets `project.source.drop_alpha`, ADR-33). Without them those operations behave as
+before; their absence is never a `fail`. color's `verification` steps `legal_levels` and `alpha` are read: a failed one
+is a `VALIDATION_ERROR`, except an `alpha` step reporting `alpha_dropped` when the request asked for the alpha to be
+dropped.
+
+Gaps found while adding alpha modes (ADR-33, proposals there): color `--keep-alpha` takes every source's colour as
+straight and has no step that un-premultiplies one (`--alpha-mode premultiplied` only multiplies the written colour),
+so a premultiplied source is refused for a grade that keeps the alpha; and an RGB alpha source tagged colour space
+`gbr` (FFmpeg's PNG encoder writes that tag in `.mov` / `.mkv`) fails there, because the tag is passed on as
+`-colorspace gbr`, a name FFmpeg's option parser does not accept.
 
 `doctor` checks that every flag listed above exists in the tool's generated `input_schema` (and, when the contract
 declares it, that `color` has `video_required: true`); a missing flag is a `fail` naming the flag, and `run` refuses

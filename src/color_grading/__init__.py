@@ -8,7 +8,7 @@ command or filter string. Those decisions belong to video-production-agent."""
 
 SKILL_ID = "color-grading"
 PACKAGE_NAME = "color-grading-skill"
-VERSION = "1.0.1"
+VERSION = "1.1.0"
 
 CONTRACT_SCHEMA_VERSION = 1
 REQUEST_SCHEMA_VERSION = 1

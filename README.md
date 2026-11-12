@@ -102,6 +102,10 @@ Write a request naming the operation graph — here, HDR tone mapping followed b
 }
 ```
 
+A source with an alpha channel can also carry `"alpha_mode": "straight"` or `"premultiplied"` (how its colour is
+stored) and `"drop_alpha": true` (an opaque result is wanted); see [Artifact validation](#artifact-validation) and
+[ADR-33](docs/decisions.md).
+
 Then plan (read-only) and run it:
 
 ```bash
@@ -187,7 +191,7 @@ source — plus the operation's own measurable effect:
 | `OCIO_TRANSFORM` | `pix_fmt == yuv420p` and the destination's exact colour-tag triple; the baked LUT's error against OpenColorIO's own processor on a test chart is recorded in provenance (`accuracy`) |
 | `MATCH_CAMERA` | `pix_fmt == yuv420p`; `measurements.delta_e2000` before / fit / after (after measured on a frame of the written file), reported, not judged |
 | `LEGALIZE` | `pix_fmt == yuv420p`; with `color --legalize`, its `legal_levels` step on the written file must pass (`legal_levels_failed` otherwise); with `check --levels`, the shares out of range on the input and the output are in provenance (`legalize.out_of_range_share.before` / `.after`), reported, not judged |
-| *alpha sources* | with ffmpeg-skill/color `--keep-alpha` (3.2.3 on), `LUT_APPLY` / `PRIMARY_CORRECTION` write an alpha line chosen from the input's codec (ProRes 4444, qtrle, PNG, VP9) and color's `alpha` step must pass (`alpha_lost` / `alpha_mismatch` / `alpha_unverified` otherwise); every other re-encoding operation, and all of them on an older ffmpeg-skill, is refused (`alpha_not_preserved`); a stream copy must keep it (`alpha_lost` otherwise), [ADR-25](docs/decisions.md), [ADR-30](docs/decisions.md) |
+| *alpha sources* | with ffmpeg-skill/color `--keep-alpha` (3.2.3 on), `LUT_APPLY` / `PRIMARY_CORRECTION` write an alpha line chosen from the input's codec (ProRes 4444, qtrle, PNG, VP9) and color's `alpha` step must pass (`alpha_lost` / `alpha_mismatch` / `alpha_unverified` otherwise); every other re-encoding operation, and all of them on an older ffmpeg-skill, is refused (`alpha_not_preserved`), as is an `expect.pix_fmt` without an alpha plane on an output that keeps it. `project.source.alpha_mode` (`straight` / `premultiplied`) says how the colour is stored: unsaid, PNG is straight and anything else is taken as straight with a warning; a premultiplied source is refused for a grade that keeps the alpha (`alpha_premultiplied`, ffmpeg-skill cannot un-premultiply). `project.source.drop_alpha: true` asks for opaque re-encodes instead (ADR-33); a stream copy must keep it (`alpha_lost` otherwise), [ADR-25](docs/decisions.md), [ADR-30](docs/decisions.md) |
 | `PRIMARY_CORRECTION` | no fixed target state (a continuous correction, not a discrete tag); the generic checks above plus ffmpeg-skill's own before/after `measurements` (real signalstats numbers — luminance and saturation averages — never a subjective judgement) |
 
 This caught a real ffmpeg-skill/FFmpeg limitation during development: a stream-copy retag can exit `0` without
@@ -309,9 +313,13 @@ Stated as boundary, not as bugs to be worked around with a private filter string
 - `LUT_APPLY`'s `lut_strength` of exactly `0.0` behaves like `1.0` (full LUT) — ffmpeg-skill's own documented
   behaviour, not something this skill introduces or can fix on its own.
 - No cache eviction: `<workspace>/.color-grading/<project_id>/` grows until the caller removes it.
-- Alpha: the source's colour is taken as straight; a premultiplied source is not un-premultiplied before a grade
-  (ffmpeg-skill has no such step), and `LUT_APPLY` on an RGB alpha source (qtrle / PNG) can shift colours on some FFmpeg
-  builds, with a warning (ADR-30). `LEGALIZE` on an alpha source is refused: a broadcast delivery is opaque.
+- Alpha: a premultiplied source is not un-premultiplied before a grade (ffmpeg-skill has no such step), so a source
+  stated as premultiplied (`project.source.alpha_mode`) is refused for a grade that keeps the alpha, and one whose mode
+  is neither stated nor fixed by its format (only PNG's is) is graded as straight with a warning (ADR-33).
+  `LUT_APPLY` on an RGB alpha source (qtrle / PNG) can shift colours on some FFmpeg builds, with a warning (ADR-30), and
+  a PNG source tagged colour space `gbr` (FFmpeg's PNG encoder writes that) fails inside ffmpeg-skill/color
+  `--keep-alpha` (ADR-33). `LEGALIZE` on an alpha source is refused unless `drop_alpha` asks for an opaque result: a
+  broadcast delivery is opaque.
 
 ## Testing
 

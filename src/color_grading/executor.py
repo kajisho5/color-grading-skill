@@ -30,7 +30,8 @@ from .graph import Node, OperationGraph
 from . import legalize as legalize_mod
 from . import match as match_mod
 from . import ocio as ocio_mod
-from .model import CUBE_EXTENSIONS, MAX_LUT_BYTES, OUTPUT_FORMATS, RETAG_TAGS, ColorRequest, parse_patches, parse_request, select_tonemap
+from .model import (ALPHA_MODE_RULES, CUBE_EXTENSIONS, MAX_LUT_BYTES, OUTPUT_FORMATS, RETAG_TAGS, ColorRequest, parse_patches, parse_request,
+                    select_alpha_mode, select_tonemap)
 from .security import PathPolicy
 
 RESPONSE_SCHEMA_ID = f"{SKILL_ID}/response@{RESPONSE_SCHEMA_VERSION}"
@@ -63,8 +64,9 @@ CHECKOUT_CAPABILITIES = {"ffmpeg-skill/color:retag-h264-vui": "retag_rewrites_h2
                          "ffmpeg-skill/color:lut-bt709-legs": "lut_legs_bt709",
                          # optional: used where supported, never required by an operation (TOOL_FOR); ADR-29, ADR-30
                          "ffmpeg-skill/check:levels": "check_tool", "ffmpeg-skill/color:legalize": "color_legalize",
-                         "ffmpeg-skill/color:keep-alpha": "color_keep_alpha"}
-OPTIONAL_CHECKOUT_CAPABILITIES = ("ffmpeg-skill/check:levels", "ffmpeg-skill/color:legalize", "ffmpeg-skill/color:keep-alpha")
+                         "ffmpeg-skill/color:keep-alpha": "color_keep_alpha", "ffmpeg-skill/color:drop-alpha": "color_drop_alpha"}
+OPTIONAL_CHECKOUT_CAPABILITIES = ("ffmpeg-skill/check:levels", "ffmpeg-skill/color:legalize", "ffmpeg-skill/color:keep-alpha",
+                                  "ffmpeg-skill/color:drop-alpha")
 
 
 # pixel formats that carry an alpha plane (FFmpeg's names): yuva*, gbrap*, ya8/ya16, rgba/bgra/argb/abgr and their 64-bit forms
@@ -72,6 +74,7 @@ ALPHA_PIX_FMT_RE = re.compile(r"^(yuva|gbrap|ya(8|16)|rgba|bgra|argb|abgr)")
 # operations that re-encode through ffmpeg-skill/color's H.264 4:2:0 path (no alpha plane exists there, ADR-25); RETAG
 # and STRIP_DOVI are stream copies, checked on their output instead
 REENCODING_OPERATIONS = ("HDR_TO_SDR", "LUT_APPLY", "PRIMARY_CORRECTION", "OCIO_TRANSFORM", "MATCH_CAMERA", "LEGALIZE")
+STREAM_COPY_OPERATIONS = ("RETAG", "STRIP_DOVI")
 # the ones ffmpeg-skill/color --keep-alpha can run on an alpha source (its --lut and --correct), ADR-30: the alpha is
 # split off, never graded, and merged back into an alpha line. The others stay refused on an alpha source
 ALPHA_GRADING_OPERATIONS = ("LUT_APPLY", "PRIMARY_CORRECTION")
@@ -86,8 +89,9 @@ ALPHA_LINE_ENCODERS = {"prores4444": "prores_ks", "qtrle": "qtrle", "png": "png"
 # ffmpeg-skill/color --keep-alpha splits the alpha off at 8 bits (measured, ADR-30): a deeper source alpha comes back
 # within one 8-bit code, not bit-identical. Pixel formats whose alpha is deeper than 8 bits
 DEEP_ALPHA_PIX_FMT_RE = re.compile(r"^(yuva\d+p(9|10|12|16)|gbrap(10|12|14|16)|ya16|rgba64|bgra64)")
-# how the source's colour is taken and written beside its alpha: straight, as ffmpeg-skill/color takes every source.
-# A premultiplied source is not un-premultiplied before the grade (ffmpeg-skill has no such step), ADR-30
+# how the colour is written beside a kept alpha: straight, the only colour ffmpeg-skill/color --keep-alpha grades (it takes
+# every source as straight and has no step that un-premultiplies one). A source the request or its format states is
+# premultiplied is therefore refused for a grade that keeps the alpha (alpha_premultiplied, ADR-33)
 ALPHA_MODE = "straight"
 
 
@@ -157,6 +161,10 @@ class NodeState:
     tonemap_selection: Optional[Dict[str, Any]] = None   # HDR_TO_SDR: the curve run and the rule that chose it (ADR-28)
     alpha_line: Optional[str] = None               # LUT_APPLY / PRIMARY_CORRECTION on an alpha source: color --alpha-codec (ADR-30)
     alpha: Optional[Dict[str, Any]] = None         # ... and what was kept and verified (provenance `alpha`)
+    alpha_required: bool = False                   # the written file must store an alpha plane (an alpha input, not dropped)
+    drop_alpha: bool = False                       # a re-encode of an alpha input flattened on request (source.drop_alpha, ADR-33)
+    drop_alpha_flag: bool = False                  # ... with color --drop-alpha (where the checkout has it)
+    alpha_mode_selection: Optional[Dict[str, Any]] = None   # how the alpha input's colour is taken and why (ADR-33)
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {"node_id": self.node.node_id, "operation_id": self.identity, "type": self.node.type,
@@ -199,6 +207,7 @@ class Executor:
         self.capabilities = dict(capabilities or {})   # capability -> supported | unsupported | unknown (doctor)
         self.warnings: List[str] = []
         self._states: Dict[str, NodeState] = {}
+        self._drop_requested = False     # project.source.drop_alpha of the request being run (ADR-33)
 
     # ---- entry points
     def response(self, document: Any, validate_only: bool = False) -> Dict[str, Any]:
@@ -235,27 +244,60 @@ class Executor:
 
         source_ext = resolved_source.suffix.lower()
         line: Optional[str] = None
+        drop = bool(project.source.drop_alpha)
+        self._drop_requested = drop
+        selection: Optional[Dict[str, Any]] = None
+        sid = project.source.source_id
         if source["alpha"]:
-            # Without --keep-alpha ffmpeg-skill/color writes H.264 4:2:0 (or ProRes 422) for every re-encoding mode: the
-            # alpha plane would be dropped (ADR-25). With it, LUT_APPLY / PRIMARY_CORRECTION grade the colour and keep the
-            # alpha in an alpha line (ADR-30); every other re-encoding operation is still refused before anything runs
+            # How the colour beside the alpha is stored (ADR-33): the request's alpha_mode, else what the format fixes
+            # (PNG), else straight with a warning. ffmpeg-skill/probe reports ffprobe's pix_fmt (has_alpha) and no
+            # premultiplication field, so nothing else is read
+            selection = select_alpha_mode(project.source.alpha_mode, source["codec"])
             keep = self._supported("ffmpeg-skill/color:keep-alpha")
-            line = alpha_line(source["codec"], source_ext) if keep else None
-            graded = ALPHA_GRADING_OPERATIONS if line else ()
-            lossy = sorted(op.op_id for op in project.operations if op.type in REENCODING_OPERATIONS and op.type not in graded)
-            if lossy:
-                if not keep:
-                    why = ("re-encode through ffmpeg-skill/color, which writes no alpha here (this ffmpeg-skill has no --keep-alpha), so the alpha "
-                           "would be lost. Grade the fill without its alpha deliberately (e.g. export it first), or update ffmpeg-skill")
-                elif line is None:
-                    why = (f"would need an alpha line, and none fits the {source_ext} container ({source['codec']} source); this skill does not "
-                           "convert containers: rewrap it as .mov or .mkv first (ffmpeg-skill/export)")
-                else:
-                    why = (f"cannot keep an alpha: only {list(ALPHA_GRADING_OPERATIONS)} grade with the alpha kept (ffmpeg-skill/color "
-                           "--keep-alpha); the others write an opaque picture. Export the fill without its alpha deliberately first")
-                raise ColorError("UNSUPPORTED_FORMAT", f"source {project.source.source_id!r} has an alpha channel ({source['pix_fmt']}); operation(s) {lossy} {why}",
-                                 {"reason": "alpha_not_preserved", "pix_fmt": source["pix_fmt"], "op_ids": lossy,
-                                  "keep_alpha": {"available": keep, "operations": list(ALPHA_GRADING_OPERATIONS), "alpha_codec": line}})
+            # drop_alpha (ADR-33): every re-encode writes the opaque line on purpose, nothing below is refused for the alpha
+            line = alpha_line(source["codec"], source_ext) if keep and not drop else None
+            if not drop:
+                # Without --keep-alpha ffmpeg-skill/color writes H.264 4:2:0 (or ProRes 422) for every re-encoding mode: the
+                # alpha plane would be dropped (ADR-25). With it, LUT_APPLY / PRIMARY_CORRECTION grade the colour and keep the
+                # alpha in an alpha line (ADR-30); every other re-encoding operation is still refused before anything runs
+                graded = ALPHA_GRADING_OPERATIONS if line else ()
+                lossy = sorted(op.op_id for op in project.operations if op.type in REENCODING_OPERATIONS and op.type not in graded)
+                grading = sorted(op.op_id for op in project.operations if op.type in ALPHA_GRADING_OPERATIONS)
+                never = [op.op_id for op in project.operations if op.type in REENCODING_OPERATIONS and op.type not in ALPHA_GRADING_OPERATIONS]
+                if grading and not never and selection["alpha_mode"] == "premultiplied":
+                    # color --keep-alpha grades the colour as it is stored and has no un-premultiply step: the edges of a
+                    # premultiplied picture would be graded at the wrong colour (darker or brighter than the fill). Refused,
+                    # also where --keep-alpha is missing (updating ffmpeg-skill would not make it right either)
+                    raise ColorError("UNSUPPORTED_FORMAT",
+                                     f"source {sid!r} has an alpha channel ({source['pix_fmt']}) whose colour is premultiplied "
+                                     f"({ALPHA_MODE_RULES[selection['rule']]}); operation(s) {grading} cannot un-premultiply it before the grade: "
+                                     "ffmpeg-skill/color --keep-alpha grades the colour as stored and has no un-premultiply step, so partly "
+                                     "transparent edges would come out too dark or too bright. Give a straight-alpha source (unpremultiply it "
+                                     "where it was rendered or exported) with alpha_mode: straight, or set project.source.drop_alpha: true for "
+                                     "an opaque result (the colour as stored, i.e. over black); RETAG and STRIP_DOVI copy it unchanged",
+                                     {"reason": "alpha_premultiplied", "pix_fmt": source["pix_fmt"], "op_ids": grading,
+                                      "alpha_mode_selection": selection,
+                                      "needs": "ffmpeg-skill/color: un-premultiply before the grade and premultiply after it (not available)"})
+                if lossy:
+                    if not keep:
+                        why = ("re-encode through ffmpeg-skill/color, which writes no alpha here (this ffmpeg-skill has no --keep-alpha), so the alpha "
+                               "would be lost. Grade the fill without its alpha deliberately (e.g. export it first), or update ffmpeg-skill")
+                    elif line is None:
+                        why = (f"would need an alpha line, and none fits the {source_ext} container ({source['codec']} source); this skill does not "
+                               "convert containers: rewrap it as .mov or .mkv first (ffmpeg-skill/export)")
+                    else:
+                        why = (f"cannot keep an alpha: only {list(ALPHA_GRADING_OPERATIONS)} grade with the alpha kept (ffmpeg-skill/color "
+                               "--keep-alpha); the others write an opaque picture. Export the fill without its alpha deliberately first")
+                    why += "; or set project.source.drop_alpha: true when an opaque result is wanted (ADR-33)"
+                    raise ColorError("UNSUPPORTED_FORMAT", f"source {sid!r} has an alpha channel ({source['pix_fmt']}); operation(s) {lossy} {why}",
+                                     {"reason": "alpha_not_preserved", "pix_fmt": source["pix_fmt"], "op_ids": lossy,
+                                      "keep_alpha": {"available": keep, "operations": list(ALPHA_GRADING_OPERATIONS), "alpha_codec": line}})
+                if grading and selection["rule"] == "assumed":
+                    # do not guess silently (ADR-33): the grade runs as straight, and the caller is told why and how to say
+                    self.warnings.append(f"source {sid!r} has an alpha channel ({source['pix_fmt']}, {source['codec']}) and neither the request "
+                                         "(project.source.alpha_mode) nor its format says whether the colour is straight or premultiplied: "
+                                         f"{grading} grade it as straight. A premultiplied source graded as straight gets dark or bright edges; "
+                                         "send alpha_mode: straight or premultiplied (alpha_mode_selection.rule: assumed)")
             luts_on_rgb = sorted(op.op_id for op in project.operations if op.type == "LUT_APPLY")
             if line and luts_on_rgb and not str(source["pix_fmt"]).startswith("yuva"):
                 # measured (ADR-30): ffmpeg-skill/color's --lut legs write BT.709 limited-range Y'CbCr, and on an RGB alpha
@@ -267,6 +309,22 @@ class Executor:
             if line and DEEP_ALPHA_PIX_FMT_RE.match(str(source["pix_fmt"])) and any(op.type in ALPHA_GRADING_OPERATIONS for op in project.operations):
                 self.warnings.append(f"the source's alpha is deeper than 8 bits ({source['pix_fmt']}): ffmpeg-skill/color --keep-alpha carries it at 8 bits, "
                                      "so it comes back within one 8-bit code, not bit-identical (alpha.precision_bits in provenance)")
+        elif project.source.alpha_mode is not None:
+            # the caller says the source has alpha and this skill sees none (a VP9 alpha layer probes as yuv420p): said, not ignored
+            self.warnings.append(f"project.source.alpha_mode is {project.source.alpha_mode!r}, but source {sid!r} shows no alpha plane "
+                                 f"({source['pix_fmt']}, {source['codec']}): it is graded as an opaque picture. A VP9 alpha layer is not seen "
+                                 "by ffmpeg-skill/probe; export such a source to ProRes 4444 / qtrle / PNG first")
+        # which operation's input carries the alpha: the source's, through stream copies and kept-alpha grades; a re-encode
+        # under drop_alpha writes the opaque line, so what follows it is opaque
+        carries: Dict[str, bool] = {}
+        alpha_in: Dict[str, bool] = {}
+        for n in graph.order:
+            node = graph.nodes[n]
+            if node.type == "SOURCE":
+                carries[n] = bool(source["alpha"])
+                continue
+            alpha_in[n] = carries[node.inputs[0]]
+            carries[n] = alpha_in[n] and (node.type in STREAM_COPY_OPERATIONS or not drop)
 
         input_paths = {str(resolved_source)}
         outputs: Dict[str, Path] = {}
@@ -276,6 +334,13 @@ class Executor:
                 raise ColorError("OUTPUT_ERROR", f"output {o.output_id!r} would overwrite the input", {"reason": "input_output_collision", "path": str(target)})
             if target.exists() and not o.overwrite:
                 raise ColorError("OUTPUT_ERROR", f"output {o.output_id!r} already exists (set overwrite: true to replace it)", {"reason": "exists", "path": str(target)})
+            expect_fmt = o.expect.get("pix_fmt")
+            if expect_fmt is not None and carries.get(graph.output_nodes[o.output_id]) and not drop and not has_alpha(expect_fmt):
+                # an output setting that would drop the alpha the output keeps: refused before anything runs (ADR-33)
+                raise ColorError("UNSUPPORTED_FORMAT",
+                                 f"output {o.output_id!r}: expect.pix_fmt {expect_fmt!r} has no alpha plane, and this output keeps the source's "
+                                 f"alpha ({source['pix_fmt']}); expect an alpha pixel format, or set project.source.drop_alpha: true for an opaque output",
+                                 {"reason": "alpha_not_preserved", "output_id": o.output_id, "expect_pix_fmt": expect_fmt, "pix_fmt": source["pix_fmt"]})
             ext = OUTPUT_FORMATS[o.format]["extension"]
             if ext != source_ext:
                 raise ColorError("UNSUPPORTED_FORMAT",
@@ -360,6 +425,12 @@ class Executor:
             if node.type == "HDR_TO_SDR":
                 selections[n] = select_tonemap(node.parameters.get("tonemap"), self._input_transfer(graph, n, source))
                 node.parameters["tonemap"] = selections[n]["tonemap"]
+        # how an alpha input is written (kept in an alpha line, or dropped on request) changes the pixels, so it is part of
+        # the identity (ADR-33); an opaque source's identities are unchanged
+        for n, a in alpha_in.items():
+            if a and graph.nodes[n].type in REENCODING_OPERATIONS:
+                kept = line if graph.nodes[n].type in ALPHA_GRADING_OPERATIONS and not drop else None
+                overrides.setdefault(n, {})["alpha_handling"] = {"alpha_line": kept, "drop_alpha": drop}
         identities = graph.identities(source["sha256"], self.tool_versions, overrides)
         states: Dict[str, NodeState] = {}
         for n in graph.order:
@@ -370,8 +441,14 @@ class Executor:
                 st.lut = luts[n]
             if n in selections:
                 st.tonemap_selection = selections[n]
-            if line is not None and node.type in ALPHA_GRADING_OPERATIONS:
+            if line is not None and alpha_in.get(n) and node.type in ALPHA_GRADING_OPERATIONS:
                 st.alpha_line = line
+            st.alpha_required = carries.get(n, False) and not drop
+            if drop and alpha_in.get(n) and node.type in REENCODING_OPERATIONS:
+                st.drop_alpha = True
+                st.drop_alpha_flag = self._supported("ffmpeg-skill/color:drop-alpha")
+            if selection is not None and alpha_in.get(n) and node.type in REENCODING_OPERATIONS:
+                st.alpha_mode_selection = selection
             if n in references:
                 st.reference = references[n]
                 st.lut = LutInfo(work_dir / f"{st.identity[:16]}.cube", 0, "")    # written at execution, from the fitted frames
@@ -382,6 +459,9 @@ class Executor:
         self._states = states
 
         plan = self._plan_document(graph, states, source, outputs, project, work_dir, resolved_source)
+        if source["alpha"]:
+            # how this request treats the source's alpha, in one place (ADR-33); each step repeats what applies to it
+            plan["alpha"] = {"pix_fmt": source["pix_fmt"], "alpha_mode_selection": selection, "drop_alpha": drop, "alpha_codec": line}
         if self.dry_run:
             return self._envelope(True, "ok", {"dry_run": True, "plan": plan, "results": [states[n].to_dict() for n in graph.order], "outputs": plan["outputs"]})
 
@@ -487,7 +567,9 @@ class Executor:
                   "lut": states[n].lut.to_dict() if states[n].lut else None,
                   **({states[n].baked.kind: states[n].baked.provenance()} if states[n].baked is not None else {}),
                   **({"tonemap_selection": states[n].tonemap_selection} if states[n].tonemap_selection is not None else {}),
-                  **({"alpha": {"keep_alpha": True, "alpha_codec": states[n].alpha_line, "alpha_mode": ALPHA_MODE}} if states[n].alpha_line else {})}
+                  **({"alpha": {"keep_alpha": True, "alpha_codec": states[n].alpha_line, "alpha_mode": ALPHA_MODE}} if states[n].alpha_line else {}),
+                  **({"alpha": {"keep_alpha": False, "drop_alpha": True, "drop_alpha_flag": states[n].drop_alpha_flag}} if states[n].drop_alpha else {}),
+                  **({"alpha_mode_selection": states[n].alpha_mode_selection} if states[n].alpha_mode_selection is not None else {})}
                  for n in graph.order if states[n].node.type != "SOURCE"]
         return {"plan_id": plan_id, "project_id": project.project_id, "work_dir": str(work_dir), "graph": graph.to_dict(),
                 "source": {k: v for k, v in source.items()},
@@ -516,7 +598,7 @@ class Executor:
             args = [src, "--to-sdr", "--tonemap", p["tonemap"], "--peak", fmt_num(p["peak_nits"]), "--desat", fmt_num(p["desat"])]
             if p["force"]:
                 args.append("--force")
-            args += ["--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], "-o", o]
+            args += ["--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], *self._alpha_args(st), "-o", o]
             return args
         if node.type in ("OCIO_TRANSFORM", "MATCH_CAMERA", "LEGALIZE"):
             assert st.lut is not None
@@ -527,7 +609,7 @@ class Executor:
                 # the LUT was baked for the source space the caller named (e.g. Rec.2100-PQ): ffmpeg-skill refuses an
                 # HDR-tagged input to --lut without --force, which exists for exactly this case
                 args.append("--force")
-            args += ["--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], "-o", o]
+            args += ["--audio-stream", str(p["audio_stream"]), self._quality_flag(), str(p["crf"]), "--preset", p["preset"], *self._alpha_args(st), "-o", o]
             return args
         if node.type == "LUT_APPLY":
             assert st.lut is not None
@@ -553,10 +635,13 @@ class Executor:
     @staticmethod
     def _alpha_args(st: NodeState) -> List[str]:
         """color --keep-alpha for an operation on an alpha source (ADR-30): the line picked from the input's codec, the
-        colour taken and written straight. Every value is a table member, never request text."""
-        if not st.alpha_line:
-            return []
-        return ["--keep-alpha", "--alpha-codec", st.alpha_line, "--alpha-mode", ALPHA_MODE]
+        colour taken and written straight. Or, when the request asks for an opaque result (drop_alpha, ADR-33), color
+        --drop-alpha where the checkout has it. Every value is a table member, never request text."""
+        if st.alpha_line:
+            return ["--keep-alpha", "--alpha-codec", st.alpha_line, "--alpha-mode", ALPHA_MODE]
+        if st.drop_alpha and st.drop_alpha_flag:
+            return ["--drop-alpha"]
+        return []
 
     @staticmethod
     def _lut_arg(lut_path: Path) -> str:
@@ -658,10 +743,23 @@ class Executor:
         alpha_step = next((s for s in steps if s.get("step") == "alpha"), None)
         legal = next((s for s in steps if s.get("step") == "legal_levels"), None)
         what = f"{st.node.type} {st.node.node_id}"
+        dropped_on_request = bool(alpha_step is not None and not alpha_step.get("ok") and alpha_step.get("reason") == "alpha_dropped"
+                                  and self._drop_requested)
+        if st.drop_alpha or dropped_on_request:
+            # drop_alpha (ADR-33): an opaque line was asked for. color --drop-alpha says so in a note; without the flag (or on
+            # a source this skill did not see as alpha) its alpha step reports alpha_dropped, which is what was asked
+            st.alpha = {"kept": False, "dropped": True, "requested_by": "project.source.drop_alpha",
+                        "tool": "ffmpeg-skill/color --drop-alpha" if st.drop_alpha_flag else "ffmpeg-skill/color (opaque line)",
+                        "reported_dropped": run.data.get("alpha_dropped"), "verification": alpha_step}
+            if st.alpha_mode_selection is not None:
+                st.alpha["alpha_mode_selection"] = st.alpha_mode_selection
+            alpha_step = None
         if st.alpha_line:
             st.alpha = {"kept": bool(alpha_step and alpha_step.get("ok")), "precision_bits": 8, "alpha_codec": run.data.get("alpha_codec", st.alpha_line),
                         "alpha_mode": run.data.get("alpha_mode", ALPHA_MODE), "source_colour": "taken as straight (not un-premultiplied)",
                         "tool": "ffmpeg-skill/color --keep-alpha", "verification": alpha_step}
+            if st.alpha_mode_selection is not None:
+                st.alpha["alpha_mode_selection"] = st.alpha_mode_selection
             if alpha_step is None:
                 raise ColorError("VALIDATION_ERROR", f"{what}: ffmpeg-skill/color --keep-alpha reported no alpha verification step",
                                  {"reason": "alpha_unverified", "path": str(written)})
@@ -791,6 +889,9 @@ class Executor:
         st.dropped_non_av_streams = m.get("dropped_non_av_streams")
         st.retagged = m.get("retagged")
         st.alpha = alpha
+        if isinstance(alpha, dict) and st.alpha_mode_selection is not None:
+            # same pixels (identity), but the rule that chose the mode is this request's (ADR-33)
+            st.alpha = {**alpha, "alpha_mode_selection": st.alpha_mode_selection}
         if st.node.type == "LEGALIZE" and st.baked is not None:
             st.baked.share = dict(prev["out_of_range_share"])
             st.baked.clamp = dict(prev["clamp"]) if prev["clamp"].get("applied") else None
@@ -836,7 +937,7 @@ class Executor:
         if source["width"] and width != source["width"] or source["height"] and height != source["height"]:
             raise ColorError("VALIDATION_ERROR", f"{what}: output resolution {width}x{height} differs from the source's {source['width']}x{source['height']}",
                              {"reason": "resolution_mismatch", "path": str(path)})
-        if source.get("alpha") and not has_alpha(video.get("pix_fmt")):
+        if st.alpha_required and not has_alpha(video.get("pix_fmt")):
             raise ColorError("VALIDATION_ERROR", f"{what}: the source's alpha channel ({source.get('pix_fmt')}) is gone from the output ({video.get('pix_fmt')})",
                              {"reason": "alpha_lost", "path": str(path), "source_pix_fmt": source.get("pix_fmt"), "pix_fmt": video.get("pix_fmt")})
         hdr, dolby_vision = probe_hdr(video), bool(video.get("dolby_vision"))

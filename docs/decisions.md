@@ -610,3 +610,85 @@
     CHANGELOG entry are unchanged. From here on a major release happens only when a person applies the label.
   - *Tests.* `tests/test_release_labels.py`.
   - *Release.* A patch release (1.0.1).
+- **ADR-33 Alpha mode and an opaque result on request: `project.source.alpha_mode` and `project.source.drop_alpha`; a
+  premultiplied source is refused for a grade that keeps the alpha, because ffmpeg-skill/color cannot un-premultiply it.**
+  ECOSYSTEM_ROADMAP.md step 8 (left unchecked); extends ADR-25 and ADR-30.
+  - *Problem.* ADR-30 took every alpha source's colour as straight and said so only in provenance (`source_colour`). The
+    request had no way to say how the colour is stored, a premultiplied source graded as straight gets wrong edges, and
+    the only answer to "I want an opaque result" was to export the fill first.
+  - *Detection.* An alpha plane is read from ffprobe's `pix_fmt` through ffmpeg-skill/probe (`has_alpha`, ADR-25).
+    Whether the colour is premultiplied is not in anything ffmpeg-skill/probe reports, for any format. So the request
+    says it: `project.source.alpha_mode`, `straight` or `premultiplied` (optional; any other value is
+    `INVALID_REQUEST`).
+  - *Default, and every assumption.* (1) The request always wins (`rule: request`). (2) PNG (codec `png`, also inside
+    `.mov` / `.mkv`): the PNG specification defines its alpha as not premultiplied, so `straight` (`rule: format`). (3)
+    Every other format (ProRes 4444, QuickTime Animation, VP9 with alpha, FFV1, ...): the stream carries no
+    premultiplication flag that ffmpeg-skill/probe reports, and the colour can be stored either way (the application
+    that renders the file chooses), so the format does not state it. (4) Not stated and not in the request: taken as
+    `straight` (`rule: assumed`), the only colour ffmpeg-skill/color grades, with a warning naming the source, its pixel
+    format and codec, the operations and the field to send. Chosen over a refusal because an alpha source sent without
+    the field completed in 1.0.x (ADR-30): refusing it now would break every caller that does not know the new field (a
+    major change); the warning keeps such a run working and says what was assumed. Where the mode changes nothing that
+    is written (stream copies, `drop_alpha`) there is no warning. (5) `alpha_mode` on a source that shows no alpha plane
+    is ignored with a warning (a VP9 alpha layer probes as `yuv420p`, ADR-30).
+  - *Premultiplied: refused where the alpha is kept.* LUT_APPLY / PRIMARY_CORRECTION on a premultiplied source without
+    `drop_alpha`: `UNSUPPORTED_FORMAT`, reason `alpha_premultiplied`, before anything runs (also under `plan`), on every
+    ffmpeg-skill checkout; the message names the ways out (a straight-alpha source with `alpha_mode: straight`,
+    `drop_alpha: true`, or a stream copy). Why it is not un-premultiplied here: color `--keep-alpha` splits the alpha
+    off, grades the colour planes as stored and merges the alpha back; every grade there is a function of the colour
+    alone and its only alpha-dependent step, `--alpha-mode premultiplied`, multiplies the written colour by the alpha.
+    Nothing in ffmpeg-skill 3.5.0 divides by it, so un-premultiplying cannot be expressed through ffmpeg-skill, and
+    running a filter graph of this skill's own would break ADR-1 and change the `execution` block that
+    video-production-agent pins (ADR-26). Grading premultiplied colour as if straight is not an approximation to keep:
+    it is exact only where the alpha is 0 or 1; at partial alpha an offset (lift, a LUT's black point) lifts
+    transparent edges and a non-linear grade (gamma, curves, most LUTs) darkens or brightens them. Order of the
+    refusals: an operation that can never keep the alpha is named first (`alpha_not_preserved`, as before), then
+    `alpha_premultiplied`, then a missing `--keep-alpha` or a container without an alpha line (`alpha_not_preserved`):
+    updating ffmpeg-skill would not make a premultiplied grade right. RETAG / STRIP_DOVI copy a premultiplied source
+    unchanged (measured: alpha and colour bit-identical after RETAG on the premultiplied ProRes 4444 fixture).
+  - *`drop_alpha`: the alpha given up only when asked.* `project.source.drop_alpha: true` (boolean, default `false`):
+    every re-encoding operation on an alpha input writes the opaque H.264 line on purpose and none is refused for the
+    alpha; RETAG / STRIP_DOVI still copy the stream; what follows an opaque intermediate is opaque and gets no flag.
+    color `--drop-alpha` is passed where detected (`ffmpeg-skill/color:drop-alpha`, optional flag group
+    `color_drop_alpha`, ADR-29's pattern); without it the same opaque line is written and color's `alpha` step, on a
+    checkout that has one, reports `alpha_dropped`, which is then the expected outcome, not a `VALIDATION_ERROR`. The
+    colour is kept as stored: a premultiplied source reads as composited over black, a straight one shows the colour its
+    transparent pixels hold. Without `drop_alpha` an output setting that would drop the alpha is refused before anything
+    runs: an output that keeps the alpha with an `expect.pix_fmt` that has no alpha plane (`alpha_not_preserved`,
+    `output_id`), next to the existing refusals (an operation that cannot keep it, a container without an alpha line),
+    whose messages now name `drop_alpha`.
+  - *Record.* `alpha_mode_selection {alpha_mode, rule, format_states, codec}` in `plan.alpha` (with `pix_fmt`,
+    `drop_alpha`, `alpha_codec`), in each re-encoding step on an alpha input, and in the `alpha` record of results and
+    provenance (kept-alpha grades as before plus this key; a dropped one is `{kept: false, dropped: true, requested_by,
+    tool, reported_dropped, verification, alpha_mode_selection}`; plan step `alpha {keep_alpha: false, drop_alpha: true,
+    drop_alpha_flag}`). A reused intermediate gets this request's selection.
+  - *Identity.* A re-encode of an alpha input adds `alpha_handling {alpha_line, drop_alpha}`: a kept and a dropped
+    alpha are different files. The mode and its rule are not in it: a stated and an assumed `straight` write the same
+    file (measured: the second run reuses the first's intermediate). An opaque source's identities do not change.
+  - *Measured* (`tests/test_alpha_mode.py`, FFmpeg 6.1, ffmpeg-skill 3.5.0; sources made with lavfi: one fill colour
+    0x4a7fb5 under three bands of alpha 0 | 128 | 255, straight and premultiplied, as ProRes 4444 tagged BT.709 and as
+    qtrle, each with an opaque twin of the same colour). Straight, alpha kept: the qtrle alpha is bit-identical in every
+    sample, the ProRes 4444 alpha within one 8-bit code (color's 8-bit split, ADR-30), the bands still read 0, 128 and
+    255, and the graded colour is one colour under every band (within 1.5 codes: no fringe). Opaque pixels against the
+    same grade through the non-alpha path on the opaque twin (H.264 4:2:0, CRF 18; tolerance 3 codes): ProRes 4444
+    LUT_APPLY within 1.0, PRIMARY_CORRECTION within 2.4; qtrle PRIMARY_CORRECTION within 2.3; qtrle LUT_APPLY shows
+    ADR-30's RGB-line shift (176,127,78 against 180,128,74), equal to BT.709 written and BT.601 read within 2 codes, and
+    warned. Premultiplied with `drop_alpha`, LUT_APPLY: opaque `yuv420p`; the alpha-0 band is white (premultiplied
+    black, inverted), the partial band the inverse of half the fill within 3 codes (6 before ffmpeg-skill 3.1.6, whose
+    `--lut` legs read BT.709 and write BT.601), the opaque band equal to the non-alpha path.
+  - *Also measured, not changed here.* An RGB alpha source tagged colour space `gbr`, which FFmpeg's PNG encoder writes
+    in `.mov` and `.mkv`, makes color `--keep-alpha` fail: it passes the source's tag on as `-colorspace gbr`, which
+    FFmpeg's option parser does not accept ("Undefined constant ... 'gbr'"). LUT_APPLY / PRIMARY_CORRECTION on such a
+    PNG source end in `TOOL_ERROR` (reported, not silent); the PNG default is checked under `plan`.
+  - *Proposals for ffmpeg-skill* (not changed here; for Velisa's ROADMAP): (1) an input-side alpha mode for color
+    `--keep-alpha`, e.g. `--source-alpha-mode premultiplied`: un-premultiply the colour after the split, grade, and
+    premultiply in RGB before the alpha line, named in the `alpha` step. With it this skill passes the request's
+    `alpha_mode`, lifts `alpha_premultiplied`, and step 8 can be ticked. (2) For an RGB line, write the colour-space tag
+    under the encoder option's name (`rgb`) or leave it out, so a PNG source tagged `gbr` can be graded.
+  - *Contract.* Additive: `alpha.alpha_mode`, `alpha.drop_alpha`, `alpha.output_settings`, the reworded
+    `alpha.keep_alpha.premultiplied_source`, `request_extensions` (the new source fields; the pinned `request.shape`
+    is unchanged), `optional_capabilities` and `ffmpeg_skill.optional_flags` gain the drop flag, `provenance_extensions`
+    names the new keys. The pinned blocks (ADR-26) are byte-identical.
+  - *For a caller.* A request without the new fields runs as in 1.0.1, with the warning when an alpha source's mode is
+    assumed; a premultiplied source has to be stated to be refused (unstated, it is still graded as straight, with the
+    warning). A minor release (1.1.0).
