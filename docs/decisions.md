@@ -679,17 +679,12 @@
     ADR-30's RGB-line shift (176,127,78 against 180,128,74), equal to BT.709 written and BT.601 read within 2 codes, and
     warned. Premultiplied with `drop_alpha`, LUT_APPLY: opaque `yuv420p`; the alpha-0 band is white (premultiplied
     black, inverted), the partial band the inverse of half the fill within 3 codes (6 before ffmpeg-skill 3.1.6, whose
-    `--lut` legs read BT.709 and write BT.601), the opaque band equal to the non-alpha path. In CI the same tests ran with
-    FFmpeg 8.0.1 (Ubuntu), 9.0.2 (macOS, Windows) and ffmpeg-skill 0.12.3, 2.24.1, 3.0.0 and main: one more exception
-    showed, PRIMARY_CORRECTION through `--keep-alpha` on the ProRes 4444 source with FFmpeg 8.0.1, 11.4 codes from the
-    opaque path (92,188,255 against 81,181,255; the shape of BT.709 written and BT.601 read), within 3 with 6.1 and
-    9.0.2. The cause is inside ffmpeg-skill/FFmpeg and cannot be steered from here, so PRIMARY_CORRECTION on a Y'CbCr
-    alpha source always carries a warning naming it, and the test bounds the shift at 12 codes where it shows. FFmpeg's
-    own premultiply also rounds a code differently from 8.0 on (181 under alpha 255 becomes 180); the fixture check
-    allows that code. Not about alpha, found on the way: HDR_TO_SDR with `force` on a BT.709-tagged ProRes 4444 picture
-    fails inside `--to-sdr`'s zscale chain with FFmpeg 8.0.1 and 9.0.2 (`AVERROR_EXTERNAL`), with or without an alpha
-    plane (its opaque twin fails the same way), while 6.1 runs it; the `drop_alpha` test therefore tone-maps a
-    PQ-tagged alpha source, with its opaque twin as the control.
+    `--lut` legs read BT.709 and write BT.601), the opaque band equal to the non-alpha path. CI runs the same tests with
+    FFmpeg 8.0.1 (Ubuntu) and 9.0.2 (macOS, Windows) against ffmpeg-skill 0.12.3, 2.24.1, 3.0.0 and main. From FFmpeg 8.0
+    on, colour tags given to the ProRes encoder only as output options did not all reach the file (the transfer was
+    missing), which first showed as wrong colours and failed tone maps that were the fixture's, not this skill's; the
+    fixtures now put the tags on the frames as well and the fixture check asserts them. FFmpeg's own premultiply also
+    rounds one code differently from 8.0 on (181 under alpha 255 becomes 180); the fixture check allows that code.
   - *Also measured, not changed here.* An RGB alpha source tagged colour space `gbr`, which FFmpeg's PNG encoder writes
     in `.mov` and `.mkv`, makes color `--keep-alpha` fail: it passes the source's tag on as `-colorspace gbr`, which
     FFmpeg's option parser does not accept ("Undefined constant ... 'gbr'"). LUT_APPLY / PRIMARY_CORRECTION on such a
@@ -699,9 +694,8 @@
     premultiply in RGB before the alpha line, named in the `alpha` step. With it this skill passes the request's
     `alpha_mode`, lifts `alpha_premultiplied`, and step 8 can be ticked. (2) For an RGB line, write the colour-space tag
     under the encoder option's name (`rgb`) or leave it out, so a PNG source tagged `gbr` can be graded. (3) Drop the
-    alpha before `--to-sdr`'s zscale chain, and find why that chain fails with FFmpeg 8.0 / 9.0 on a BT.709-tagged
-    picture under `--force`. (4) Find why `--correct --keep-alpha` on a Y'CbCr source moves colours with FFmpeg
-    8.0.1 while `--correct` on the same picture without alpha does not.
+    alpha before `--to-sdr`'s zscale chain, so an HDR alpha master tone-maps without depending on how the build's zscale
+    treats an alpha plane.
   - *Contract.* Additive: `alpha.alpha_mode`, `alpha.drop_alpha`, `alpha.output_settings`, the reworded
     `alpha.keep_alpha.premultiplied_source`, `request_extensions` (the new source fields; the pinned `request.shape`
     is unchanged), `optional_capabilities` and `ffmpeg_skill.optional_flags` gain the drop flag, `provenance_extensions`

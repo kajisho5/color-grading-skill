@@ -306,15 +306,6 @@ class Executor:
                 self.warnings.append(f"LUT_APPLY {luts_on_rgb} on an RGB alpha source ({source['pix_fmt']}): ffmpeg-skill/color --lut's colour legs can "
                                      "shift colours on the way back to the RGB alpha line with some FFmpeg builds (BT.709 written, another matrix read); "
                                      "the alpha is kept. Check the colour, or grade a Y'CbCr alpha master (ProRes 4444) instead")
-            corrections = sorted(op.op_id for op in project.operations if op.type == "PRIMARY_CORRECTION")
-            if line and corrections and str(source["pix_fmt"]).startswith("yuva"):
-                # measured (ADR-33): with the alpha kept, color --correct's colour on a Y'CbCr alpha master matched the same
-                # correction on an opaque picture within 3 codes with FFmpeg 6.1 and 9.0.2, and landed up to 11 codes away with
-                # 8.0.1 (the shape of BT.709 written and BT.601 read). The alpha is kept; the colour can shift
-                self.warnings.append(f"PRIMARY_CORRECTION {corrections} on a Y'CbCr alpha source ({source['pix_fmt']}): with the alpha kept, "
-                                     "ffmpeg-skill/color --correct's colour can differ from the same correction on an opaque picture with "
-                                     "some FFmpeg builds (measured: up to 11 of 255 with FFmpeg 8.0.1, within 3 with 6.1 and 9.0.2); the "
-                                     "alpha is kept. Check the colour against the opaque plates it is composited with")
             if line and DEEP_ALPHA_PIX_FMT_RE.match(str(source["pix_fmt"])) and any(op.type in ALPHA_GRADING_OPERATIONS for op in project.operations):
                 self.warnings.append(f"the source's alpha is deeper than 8 bits ({source['pix_fmt']}): ffmpeg-skill/color --keep-alpha carries it at 8 bits, "
                                      "so it comes back within one 8-bit code, not bit-identical (alpha.precision_bits in provenance)")

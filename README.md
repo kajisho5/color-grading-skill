@@ -318,8 +318,7 @@ Stated as boundary, not as bugs to be worked around with a private filter string
   is neither stated nor fixed by its format (only PNG's is) is graded as straight with a warning (ADR-33).
   `LUT_APPLY` on an RGB alpha source (qtrle / PNG) can shift colours on some FFmpeg builds, with a warning (ADR-30), and
   a PNG source tagged colour space `gbr` (FFmpeg's PNG encoder writes that) fails inside ffmpeg-skill/color
-  `--keep-alpha` (ADR-33). `PRIMARY_CORRECTION` on a Y'CbCr alpha source (ProRes 4444) can shift colours on some FFmpeg
-  builds too (measured: 11 codes with 8.0.1), with a warning. `LEGALIZE` on an alpha source is refused unless
+  `--keep-alpha` (ADR-33). `LEGALIZE` on an alpha source is refused unless
   `drop_alpha` asks for an opaque result: a broadcast delivery is opaque.
 
 ## Testing

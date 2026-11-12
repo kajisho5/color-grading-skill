@@ -38,6 +38,9 @@ _TO_709 = "scale=out_color_matrix=bt709:out_range=tv"
 _TAGS = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
 # the same pictures tagged BT.2020 / PQ: an HDR alpha master as far as the tags go, for HDR_TO_SDR without force
 _PQ_TAGS = ["-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", "smpte2084", "-color_range", "tv"]
+# the tags put on the frames too: from FFmpeg 8.0 on the output options alone did not reach the file (transfer None)
+_LABEL_709 = "setparams=range=tv:color_primaries=bt709:color_trc=bt709:colorspace=bt709"
+_LABEL_PQ = "setparams=range=tv:color_primaries=bt2020:color_trc=smpte2084:colorspace=bt2020nc"
 _PRORES = ["-c:v", "prores_ks", "-profile:v", "4"]
 OPS = {"LUT_APPLY": {"lut_path": "invert.cube"}, "PRIMARY_CORRECTION": {"exposure": 0.5, "saturation": 1.3}}
 DROP_OPS = {"HDR_TO_SDR": {}, "LUT_APPLY": {"lut_path": "invert.cube"}, "PRIMARY_CORRECTION": {"saturation": 0.5},
@@ -53,12 +56,12 @@ def _ff(*args):
 def bands(tmp_path_factory):
     """The synthetic band sources (a few KB each)."""
     d = tmp_path_factory.mktemp("bands")
-    _ff("-f", "lavfi", "-i", f"{_BANDS},{_TO_709},format=yuva444p10le", *_PRORES, "-pix_fmt", "yuva444p10le", *_TAGS, str(d / "bands_4444.mov"))
-    _ff("-f", "lavfi", "-i", f"{_BANDS},premultiply=inplace=1,{_TO_709},format=yuva444p10le", *_PRORES, "-pix_fmt", "yuva444p10le", *_TAGS,
+    _ff("-f", "lavfi", "-i", f"{_BANDS},{_TO_709},format=yuva444p10le,{_LABEL_709}", *_PRORES, "-pix_fmt", "yuva444p10le", *_TAGS, str(d / "bands_4444.mov"))
+    _ff("-f", "lavfi", "-i", f"{_BANDS},premultiply=inplace=1,{_TO_709},format=yuva444p10le,{_LABEL_709}", *_PRORES, "-pix_fmt", "yuva444p10le", *_TAGS,
         str(d / "bands_4444_premult.mov"))
-    _ff("-f", "lavfi", "-i", f"{_BANDS},{_TO_709},format=yuv444p10le", *_PRORES, "-pix_fmt", "yuv444p10le", *_TAGS, str(d / "bands_4444_opaque.mov"))
-    _ff("-f", "lavfi", "-i", f"{_BANDS},{_TO_709},format=yuva444p10le", *_PRORES, "-pix_fmt", "yuva444p10le", *_PQ_TAGS, str(d / "bands_4444_pq.mov"))
-    _ff("-f", "lavfi", "-i", f"{_BANDS},{_TO_709},format=yuv444p10le", *_PRORES, "-pix_fmt", "yuv444p10le", *_PQ_TAGS, str(d / "bands_4444_pq_opaque.mov"))
+    _ff("-f", "lavfi", "-i", f"{_BANDS},{_TO_709},format=yuv444p10le,{_LABEL_709}", *_PRORES, "-pix_fmt", "yuv444p10le", *_TAGS, str(d / "bands_4444_opaque.mov"))
+    _ff("-f", "lavfi", "-i", f"{_BANDS},{_TO_709},format=yuva444p10le,{_LABEL_PQ}", *_PRORES, "-pix_fmt", "yuva444p10le", *_PQ_TAGS, str(d / "bands_4444_pq.mov"))
+    _ff("-f", "lavfi", "-i", f"{_BANDS},{_TO_709},format=yuv444p10le,{_LABEL_PQ}", *_PRORES, "-pix_fmt", "yuv444p10le", *_PQ_TAGS, str(d / "bands_4444_pq_opaque.mov"))
     _ff("-f", "lavfi", "-i", _BANDS, "-c:v", "qtrle", "-pix_fmt", "argb", str(d / "bands_rle.mov"))
     _ff("-f", "lavfi", "-i", f"{_BANDS},premultiply=inplace=1", "-c:v", "qtrle", "-pix_fmt", "argb", str(d / "bands_rle_premult.mov"))
     _ff("-f", "lavfi", "-i", f"{_BANDS},format=rgb24", "-c:v", "qtrle", "-pix_fmt", "rgb24", str(d / "bands_rle_opaque.mov"))
@@ -145,6 +148,13 @@ def test_the_band_sources_hold_alpha_0_partial_and_1_straight_and_premultiplied(
     # colour x alpha, within the one code FFmpeg's premultiply rounds by (8.0 and 9.0 write 180 for 181 under alpha 255)
     assert got[0] == (0, 0, 0) and _near(got[2], FILL, 1) and _near(got[1], tuple(c * 128 / 255 for c in FILL), 1)
     assert _near(_band_colour(_rgba(ws / "bands_4444.mov"), 2), FILL, 1) and _near(_band_colour(_rgba(ws / "bands_4444_opaque.mov"), 0), FILL, 1)
+    # every tag the ProRes sources claim is in the file (what ffmpeg-skill/probe reads, and what color keeps or converts by)
+    for name, tags in (("bands_4444", ("bt709", "bt709", "bt709")), ("bands_4444_premult", ("bt709", "bt709", "bt709")),
+                       ("bands_4444_opaque", ("bt709", "bt709", "bt709")), ("bands_4444_pq", ("bt2020nc", "bt2020", "smpte2084")),
+                       ("bands_4444_pq_opaque", ("bt2020nc", "bt2020", "smpte2084"))):
+        s = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=color_space,color_primaries,color_transfer",
+                                       "-of", "json", str(ws / f"{name}.mov")], capture_output=True, text=True, check=True).stdout)["streams"][0]
+        assert (s.get("color_space"), s.get("color_primaries"), s.get("color_transfer")) == tags, (name, s)
 
 
 # ---- straight: the alpha is kept, bit-identical (or within its stated tolerance), and opaque pixels match the non-alpha path
@@ -182,17 +192,11 @@ def test_a_straight_source_keeps_its_alpha_and_its_opaque_colour_matches_the_non
     assert not any("alpha" in w for w in ref["warnings"]) and "alpha" not in ref["plan"]
     opaque, non_alpha = bands_out[2], _band_colour(_rgba(ws / "ref" / "main.mov"), 2)
     print(f"{family} {op_type}: opaque band {opaque}, non-alpha path {non_alpha}")
-    if family == "4444" and op_type == "PRIMARY_CORRECTION":
-        assert any("Y'CbCr alpha source" in w for w in d["warnings"]), d["warnings"]     # always said (ADR-33)
     if family == "rle" and op_type == "LUT_APPLY" and not _near(opaque, non_alpha, ACROSS_LINES):
         # a measured exception (ADR-30): --lut's legs write BT.709 Y'CbCr and the RGB alpha line reads it back with
         # BT.601's matrix on some FFmpeg builds (6.1). Exactly that shift, within 2 codes, and named in a warning
         assert _near(opaque, _bt709_read_as_bt601(non_alpha), 2.0), (opaque, non_alpha)
         assert any("RGB alpha source" in w for w in d["warnings"])
-    elif family == "4444" and op_type == "PRIMARY_CORRECTION" and not _near(opaque, non_alpha, ACROSS_LINES):
-        # the other measured exception (ADR-33): with FFmpeg 8.0.1, --correct through --keep-alpha landed 11.4 codes from the
-        # opaque path (6.1 and 9.0.2: within 3). Bounded here, and named in the warning above
-        assert _near(opaque, non_alpha, 12.0), (opaque, non_alpha)
     else:
         assert _near(opaque, non_alpha, ACROSS_LINES), (opaque, non_alpha)
 
@@ -284,8 +288,7 @@ def test_drop_alpha_flattens_a_premultiplied_source_over_black(ws, capabilities,
 @pytest.mark.parametrize("op_type", sorted(DROP_OPS))
 def test_drop_alpha_lets_every_reencoding_operation_write_an_opaque_picture(ws, capabilities, op_type):
     assert set(DROP_OPS) == set(REENCODING_OPERATIONS)
-    # HDR_TO_SDR on the PQ-tagged copy, with no force: tone-mapping a BT.709-tagged picture with force fails inside
-    # --to-sdr's zscale chain with FFmpeg 8.0.1 and 9.0.2, with or without an alpha plane (measured in CI, ADR-33)
+    # HDR_TO_SDR on the PQ-tagged copy, as on an HDR alpha master, with no force
     code, d = _run(_doc("bands_4444_pq.mov" if op_type == "HDR_TO_SDR" else "bands_4444.mov", op_type, DROP_OPS[op_type], drop_alpha=True))
     missing = _required_unsupported(capabilities, op_type)
     if missing:     # this checkout cannot run the operation at all (e.g. MATCH_CAMERA before ffmpeg-skill 3.1.6)
