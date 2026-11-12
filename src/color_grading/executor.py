@@ -288,7 +288,8 @@ class Executor:
                     else:
                         why = (f"cannot keep an alpha: only {list(ALPHA_GRADING_OPERATIONS)} grade with the alpha kept (ffmpeg-skill/color "
                                "--keep-alpha); the others write an opaque picture. Export the fill without its alpha deliberately first")
-                    why += "; or set project.source.drop_alpha: true when an opaque result is wanted (ADR-33)"
+                    why += ("; or set project.source.drop_alpha: true when an opaque result is wanted (ADR-33; HDR_TO_SDR takes no alpha "
+                            "input even then)")
                     raise ColorError("UNSUPPORTED_FORMAT", f"source {sid!r} has an alpha channel ({source['pix_fmt']}); operation(s) {lossy} {why}",
                                      {"reason": "alpha_not_preserved", "pix_fmt": source["pix_fmt"], "op_ids": lossy,
                                       "keep_alpha": {"available": keep, "operations": list(ALPHA_GRADING_OPERATIONS), "alpha_codec": line}})
@@ -306,6 +307,15 @@ class Executor:
                 self.warnings.append(f"LUT_APPLY {luts_on_rgb} on an RGB alpha source ({source['pix_fmt']}): ffmpeg-skill/color --lut's colour legs can "
                                      "shift colours on the way back to the RGB alpha line with some FFmpeg builds (BT.709 written, another matrix read); "
                                      "the alpha is kept. Check the colour, or grade a Y'CbCr alpha master (ProRes 4444) instead")
+            corrections = sorted(op.op_id for op in project.operations if op.type == "PRIMARY_CORRECTION")
+            if line and corrections and str(source["pix_fmt"]).startswith("yuva"):
+                # measured (ADR-33): with the alpha kept, color --correct's colour on a Y'CbCr alpha master matched the same
+                # correction on an opaque picture within 3 codes with FFmpeg 6.1 and 9.0.2, and landed up to 11 codes away with
+                # 8.0.1 (the shape of BT.709 written and BT.601 read). The alpha is kept; the colour can shift
+                self.warnings.append(f"PRIMARY_CORRECTION {corrections} on a Y'CbCr alpha source ({source['pix_fmt']}): with the alpha kept, "
+                                     "ffmpeg-skill/color --correct's colour can differ from the same correction on an opaque picture with "
+                                     "some FFmpeg builds (measured: up to 11 of 255 with FFmpeg 8.0.1, within 3 with 6.1 and 9.0.2); the "
+                                     "alpha is kept. Check the colour against the opaque plates it is composited with")
             if line and DEEP_ALPHA_PIX_FMT_RE.match(str(source["pix_fmt"])) and any(op.type in ALPHA_GRADING_OPERATIONS for op in project.operations):
                 self.warnings.append(f"the source's alpha is deeper than 8 bits ({source['pix_fmt']}): ffmpeg-skill/color --keep-alpha carries it at 8 bits, "
                                      "so it comes back within one 8-bit code, not bit-identical (alpha.precision_bits in provenance)")
@@ -325,6 +335,16 @@ class Executor:
                 continue
             alpha_in[n] = carries[node.inputs[0]]
             carries[n] = alpha_in[n] and (node.type in STREAM_COPY_OPERATIONS or not drop)
+        tone_mapped = sorted(n.split(":", 1)[1] for n, a in alpha_in.items() if a and graph.nodes[n].type == "HDR_TO_SDR")
+        if drop and tone_mapped:
+            # measured (ADR-33): color --to-sdr hands the alpha plane to its zscale chain, which fails with FFmpeg 8.0.1 and
+            # 9.0.2 builds (AVERROR_EXTERNAL) and runs with 6.1. Refused on every build, so the outcome does not depend on it
+            raise ColorError("UNSUPPORTED_FORMAT",
+                             f"source {sid!r} has an alpha channel ({source['pix_fmt']}); HDR_TO_SDR {tone_mapped} cannot take an alpha input, "
+                             "even with drop_alpha: ffmpeg-skill/color --to-sdr passes the alpha plane into its zscale chain, which fails with "
+                             "some FFmpeg builds (measured: 8.0.1 and 9.0.2; 6.1 runs it). Flatten the source first (ffmpeg-skill/export), "
+                             "or convert an HDR alpha master with OCIO_TRANSFORM (a baked LUT, no zscale) under drop_alpha",
+                             {"reason": "alpha_input_not_supported", "pix_fmt": source["pix_fmt"], "op_ids": tone_mapped})
 
         input_paths = {str(resolved_source)}
         outputs: Dict[str, Path] = {}
@@ -443,7 +463,7 @@ class Executor:
                 st.tonemap_selection = selections[n]
             if line is not None and alpha_in.get(n) and node.type in ALPHA_GRADING_OPERATIONS:
                 st.alpha_line = line
-            st.alpha_required = carries.get(n, False) and not drop
+            st.alpha_required = carries.get(n, False)    # what keeps the alpha (a stream copy under drop_alpha too) must store it
             if drop and alpha_in.get(n) and node.type in REENCODING_OPERATIONS:
                 st.drop_alpha = True
                 st.drop_alpha_flag = self._supported("ffmpeg-skill/color:drop-alpha")
@@ -743,17 +763,18 @@ class Executor:
         alpha_step = next((s for s in steps if s.get("step") == "alpha"), None)
         legal = next((s for s in steps if s.get("step") == "legal_levels"), None)
         what = f"{st.node.type} {st.node.node_id}"
-        dropped_on_request = bool(alpha_step is not None and not alpha_step.get("ok") and alpha_step.get("reason") == "alpha_dropped"
-                                  and self._drop_requested)
-        if st.drop_alpha or dropped_on_request:
+        reported_dropped = bool(alpha_step is not None and not alpha_step.get("ok") and alpha_step.get("reason") == "alpha_dropped")
+        if st.drop_alpha or (reported_dropped and self._drop_requested and not st.alpha_required):
             # drop_alpha (ADR-33): an opaque line was asked for. color --drop-alpha says so in a note; without the flag (or on
-            # a source this skill did not see as alpha) its alpha step reports alpha_dropped, which is what was asked
+            # a source this skill did not see as alpha) its alpha step reports alpha_dropped, which is what was asked. Any
+            # other failed alpha step is still a VALIDATION_ERROR below
             st.alpha = {"kept": False, "dropped": True, "requested_by": "project.source.drop_alpha",
                         "tool": "ffmpeg-skill/color --drop-alpha" if st.drop_alpha_flag else "ffmpeg-skill/color (opaque line)",
                         "reported_dropped": run.data.get("alpha_dropped"), "verification": alpha_step}
             if st.alpha_mode_selection is not None:
                 st.alpha["alpha_mode_selection"] = st.alpha_mode_selection
-            alpha_step = None
+            if alpha_step is None or alpha_step.get("ok") or reported_dropped:
+                alpha_step = None
         if st.alpha_line:
             st.alpha = {"kept": bool(alpha_step and alpha_step.get("ok")), "precision_bits": 8, "alpha_codec": run.data.get("alpha_codec", st.alpha_line),
                         "alpha_mode": run.data.get("alpha_mode", ALPHA_MODE), "source_colour": "taken as straight (not un-premultiplied)",
@@ -940,6 +961,9 @@ class Executor:
         if st.alpha_required and not has_alpha(video.get("pix_fmt")):
             raise ColorError("VALIDATION_ERROR", f"{what}: the source's alpha channel ({source.get('pix_fmt')}) is gone from the output ({video.get('pix_fmt')})",
                              {"reason": "alpha_lost", "path": str(path), "source_pix_fmt": source.get("pix_fmt"), "pix_fmt": video.get("pix_fmt")})
+        if st.drop_alpha and has_alpha(video.get("pix_fmt")):
+            raise ColorError("VALIDATION_ERROR", f"{what}: drop_alpha asked for an opaque output, and it still stores an alpha plane ({video.get('pix_fmt')})",
+                             {"reason": "alpha_not_dropped", "path": str(path), "pix_fmt": video.get("pix_fmt")})
         hdr, dolby_vision = probe_hdr(video), bool(video.get("dolby_vision"))
         if st.node.type == "HDR_TO_SDR" and hdr:
             raise ColorError("VALIDATION_ERROR", f"{what}: output is still tagged HDR (transfer={video.get('color_transfer')}, primaries={video.get('color_primaries')}) after tone mapping",

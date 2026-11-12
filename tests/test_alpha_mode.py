@@ -138,7 +138,8 @@ def test_the_band_sources_hold_alpha_0_partial_and_1_straight_and_premultiplied(
     i = [(16 * W + b * BAND + 16) * 4 for b in range(3)]
     assert all(tuple(straight[j:j + 3]) == FILL for j in i)                                     # straight: one colour under every alpha
     got = [tuple(premult[j:j + 3]) for j in i]
-    assert got[0] == (0, 0, 0) and got[2] == FILL and _near(got[1], tuple(c * 128 / 255 for c in FILL), 1)   # colour x alpha
+    # colour x alpha, within the one code FFmpeg's premultiply rounds by (8.0 and 9.0 write 180 for 181 under alpha 255)
+    assert got[0] == (0, 0, 0) and _near(got[2], FILL, 1) and _near(got[1], tuple(c * 128 / 255 for c in FILL), 1)
     assert _near(_band_colour(_rgba(ws / "bands_4444.mov"), 2), FILL, 1) and _near(_band_colour(_rgba(ws / "bands_4444_opaque.mov"), 0), FILL, 1)
 
 
@@ -177,11 +178,17 @@ def test_a_straight_source_keeps_its_alpha_and_its_opaque_colour_matches_the_non
     assert not any("alpha" in w for w in ref["warnings"]) and "alpha" not in ref["plan"]
     opaque, non_alpha = bands_out[2], _band_colour(_rgba(ws / "ref" / "main.mov"), 2)
     print(f"{family} {op_type}: opaque band {opaque}, non-alpha path {non_alpha}")
+    if family == "4444" and op_type == "PRIMARY_CORRECTION":
+        assert any("Y'CbCr alpha source" in w for w in d["warnings"]), d["warnings"]     # always said (ADR-33)
     if family == "rle" and op_type == "LUT_APPLY" and not _near(opaque, non_alpha, ACROSS_LINES):
-        # the one measured exception (ADR-30): --lut's legs write BT.709 Y'CbCr and the RGB alpha line reads it back with
+        # a measured exception (ADR-30): --lut's legs write BT.709 Y'CbCr and the RGB alpha line reads it back with
         # BT.601's matrix on some FFmpeg builds (6.1). Exactly that shift, within 2 codes, and named in a warning
         assert _near(opaque, _bt709_read_as_bt601(non_alpha), 2.0), (opaque, non_alpha)
         assert any("RGB alpha source" in w for w in d["warnings"])
+    elif family == "4444" and op_type == "PRIMARY_CORRECTION" and not _near(opaque, non_alpha, ACROSS_LINES):
+        # the other measured exception (ADR-33): with FFmpeg 8.0.1, --correct through --keep-alpha landed 11.4 codes from the
+        # opaque path (6.1 and 9.0.2: within 3). Bounded here, and named in the warning above
+        assert _near(opaque, non_alpha, 12.0), (opaque, non_alpha)
     else:
         assert _near(opaque, non_alpha, ACROSS_LINES), (opaque, non_alpha)
 
@@ -274,6 +281,13 @@ def test_drop_alpha_flattens_a_premultiplied_source_over_black(ws, capabilities,
 def test_drop_alpha_lets_every_reencoding_operation_write_an_opaque_picture(ws, capabilities, op_type):
     assert set(DROP_OPS) == set(REENCODING_OPERATIONS)
     code, d = _run(_doc("bands_4444.mov", op_type, DROP_OPS[op_type], drop_alpha=True))
+    if op_type == "HDR_TO_SDR":
+        # the one exception, on every build (ADR-33): --to-sdr hands the alpha plane to zscale, which fails with FFmpeg 8.0.1
+        # and 9.0.2 (measured in CI; 6.1 runs it), so it is refused before anything runs
+        assert code == 6 and d["error"]["details"] == {"reason": "alpha_input_not_supported", "pix_fmt": d["error"]["details"]["pix_fmt"],
+                                                       "op_ids": ["x"]}, d.get("error")
+        assert "OCIO_TRANSFORM" in d["error"]["message"] and not (ws / "out").exists() and not (ws / ".color-grading").exists()
+        return
     missing = _required_unsupported(capabilities, op_type)
     if missing:     # this checkout cannot run the operation at all (e.g. MATCH_CAMERA before ffmpeg-skill 3.1.6)
         assert code != 0 and d["error"]["code"] == "TOOL_ERROR", d.get("error")
@@ -287,8 +301,20 @@ def test_drop_alpha_lets_every_reencoding_operation_write_an_opaque_picture(ws, 
     assert not any("neither the request" in w for w in d["warnings"])       # nothing is graded with the alpha kept
 
 
+def test_the_same_picture_without_alpha_is_tone_mapped(ws, capabilities):
+    """The control for HDR_TO_SDR's refusal above: the opaque twin (the same colour planes, no alpha) runs through --to-sdr
+    wherever this checkout can tone-map at all, so the refusal is about the alpha plane, not the picture."""
+    code, d = _run(_doc("bands_4444_opaque.mov", "HDR_TO_SDR", {"force": True}))
+    missing = _required_unsupported(capabilities, "HDR_TO_SDR")
+    if missing:
+        assert code != 0 and set(d["error"]["details"]["missing"]) == set(missing), d.get("error")
+        return
+    assert code == 0 and d["ok"], d.get("error")
+    assert d["outputs"][0]["artifact"]["pix_fmt"] == "yuv420p"
+
+
 def test_without_drop_alpha_the_refusal_names_it(ws):
-    code, d = _run(_doc("bands_4444.mov", "HDR_TO_SDR", {"force": True}), "plan")
+    code, d = _run(_doc("bands_4444.mov", "LEGALIZE", {}), "plan")
     assert code == 6 and d["error"]["details"]["reason"] == "alpha_not_preserved"
     assert "project.source.drop_alpha: true" in d["error"]["message"]
 
@@ -366,6 +392,47 @@ def test_an_alpha_dropped_step_is_what_drop_alpha_asked_for(tmp_path):
     with pytest.raises(ColorError) as e:
         ex._check_tool_verification(NodeState(Node("op:x", "LUT_APPLY", ["source"], {}), "id"), _Run({"verification": [step]}), tmp_path / "x.mov")
     assert e.value.details["reason"] == "alpha_lost"
+    # ... or when the alpha step failed for another reason than the drop that was asked for
+    with pytest.raises(ColorError) as e:
+        ex._check_tool_verification(st, _Run({"verification": [{"step": "alpha", "ok": False, "comparison": {"ok": False}}]}), tmp_path / "x.mov")
+    assert e.value.details["reason"] == "alpha_mismatch"
+    # ... or when a stream copy, which keeps the alpha under drop_alpha too, reports it dropped
+    ex._drop_requested = True
+    copy = NodeState(Node("op:r", "RETAG", ["source"], {}), "id")
+    copy.alpha_required = True
+    with pytest.raises(ColorError) as e:
+        ex._check_tool_verification(copy, _Run({"verification": [step]}), tmp_path / "x.mov")
+    assert e.value.details["reason"] == "alpha_lost"
+    # an alpha step reporting the drop on a source this skill did not see as alpha (VP9) is accepted when it was asked for
+    vp9 = NodeState(Node("op:p", "PRIMARY_CORRECTION", ["source"], {}), "id")
+    ex._check_tool_verification(vp9, _Run({"verification": [step]}), tmp_path / "x.mkv")
+    assert vp9.alpha["dropped"] is True
+
+
+class _ProbeStub:
+    def __init__(self, pix_fmt):
+        self.pix_fmt = pix_fmt
+
+    def probe(self, path, timeout=None):
+        return {"duration": 1.0, "video": {"width": W, "height": H, "pix_fmt": self.pix_fmt, "codec": "prores"}}
+
+
+@pytest.mark.parametrize("drop,required,pix_fmt,reason", [(True, False, "yuva444p12le", "alpha_not_dropped"), (False, True, "yuv420p", "alpha_lost"),
+                                                          (True, True, "yuv420p", "alpha_lost"), (True, False, "yuv420p", None),
+                                                          (False, True, "yuva444p12le", None)])
+def test_a_dropped_alpha_must_be_gone_and_a_kept_one_present(tmp_path, drop, required, pix_fmt, reason):
+    out = tmp_path / "o.mov"
+    out.write_bytes(b"x" * 64)
+    st = NodeState(Node("op:x", "PRIMARY_CORRECTION", ["source"], {}), "id")
+    st.drop_alpha, st.alpha_required = drop, required
+    source = {"duration": 1.0, "width": W, "height": H, "pix_fmt": "yuva444p12le", "subtitle_streams": 0, "data_streams": 0}
+    ex = Executor(PathPolicy(str(tmp_path)), _ProbeStub(pix_fmt))
+    if reason is None:
+        assert ex._validate_artifact(out, st, source).pix_fmt == pix_fmt
+        return
+    with pytest.raises(ColorError) as e:
+        ex._validate_artifact(out, st, source)
+    assert e.value.code == "VALIDATION_ERROR" and e.value.details["reason"] == reason
 
 
 class _StubSkill:
@@ -410,6 +477,16 @@ def test_alpha_mode_on_a_source_without_an_alpha_plane_is_said(tmp_path):
     assert d["ok"]
     (w,) = d["warnings"]
     assert "shows no alpha plane" in w and "VP9" in w
+
+
+def test_hdr_to_sdr_takes_no_alpha_input_even_with_drop_alpha_but_an_opaque_one_after_a_drop(tmp_path):
+    hdr = {"op_id": "h", "type": "HDR_TO_SDR", "input": "source", "parameters": {"force": True}}
+    d = _plan(tmp_path, ALPHA_VIDEO, ops=[hdr], drop_alpha=True)
+    assert d["error"]["details"]["reason"] == "alpha_input_not_supported" and d["error"]["details"]["op_ids"] == ["h"]
+    after = [{"op_id": "l", "type": "LUT_APPLY", "input": "source", "parameters": {"lut_path": "grade.cube"}}, {**hdr, "input": "op:l"}]
+    d = _plan(tmp_path, ALPHA_VIDEO, ops=after, drop_alpha=True)
+    assert d["ok"], d.get("error")
+    assert [s.get("alpha", {}).get("drop_alpha") for s in d["plan"]["steps"]] == [True, None]
 
 
 def test_drop_alpha_is_planned_for_the_reencodes_of_an_alpha_input_only(tmp_path):
