@@ -288,8 +288,7 @@ class Executor:
                     else:
                         why = (f"cannot keep an alpha: only {list(ALPHA_GRADING_OPERATIONS)} grade with the alpha kept (ffmpeg-skill/color "
                                "--keep-alpha); the others write an opaque picture. Export the fill without its alpha deliberately first")
-                    why += ("; or set project.source.drop_alpha: true when an opaque result is wanted (ADR-33; HDR_TO_SDR takes no alpha "
-                            "input even then)")
+                    why += "; or set project.source.drop_alpha: true when an opaque result is wanted (ADR-33)"
                     raise ColorError("UNSUPPORTED_FORMAT", f"source {sid!r} has an alpha channel ({source['pix_fmt']}); operation(s) {lossy} {why}",
                                      {"reason": "alpha_not_preserved", "pix_fmt": source["pix_fmt"], "op_ids": lossy,
                                       "keep_alpha": {"available": keep, "operations": list(ALPHA_GRADING_OPERATIONS), "alpha_codec": line}})
@@ -335,16 +334,6 @@ class Executor:
                 continue
             alpha_in[n] = carries[node.inputs[0]]
             carries[n] = alpha_in[n] and (node.type in STREAM_COPY_OPERATIONS or not drop)
-        tone_mapped = sorted(n.split(":", 1)[1] for n, a in alpha_in.items() if a and graph.nodes[n].type == "HDR_TO_SDR")
-        if drop and tone_mapped:
-            # measured (ADR-33): color --to-sdr hands the alpha plane to its zscale chain, which fails with FFmpeg 8.0.1 and
-            # 9.0.2 builds (AVERROR_EXTERNAL) and runs with 6.1. Refused on every build, so the outcome does not depend on it
-            raise ColorError("UNSUPPORTED_FORMAT",
-                             f"source {sid!r} has an alpha channel ({source['pix_fmt']}); HDR_TO_SDR {tone_mapped} cannot take an alpha input, "
-                             "even with drop_alpha: ffmpeg-skill/color --to-sdr passes the alpha plane into its zscale chain, which fails with "
-                             "some FFmpeg builds (measured: 8.0.1 and 9.0.2; 6.1 runs it). Flatten the source first (ffmpeg-skill/export), "
-                             "or convert an HDR alpha master with OCIO_TRANSFORM (a baked LUT, no zscale) under drop_alpha",
-                             {"reason": "alpha_input_not_supported", "pix_fmt": source["pix_fmt"], "op_ids": tone_mapped})
 
         input_paths = {str(resolved_source)}
         outputs: Dict[str, Path] = {}

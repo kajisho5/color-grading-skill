@@ -36,9 +36,11 @@ _BANDS = (f"color=c=0x4a7fb5:s={W}x{H}:d=1:r={FRAMES},format=rgba,"
           f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(X,{BAND}),0,if(lt(X,{2 * BAND}),128,255))'")
 _TO_709 = "scale=out_color_matrix=bt709:out_range=tv"
 _TAGS = ["-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
+# the same pictures tagged BT.2020 / PQ: an HDR alpha master as far as the tags go, for HDR_TO_SDR without force
+_PQ_TAGS = ["-colorspace", "bt2020nc", "-color_primaries", "bt2020", "-color_trc", "smpte2084", "-color_range", "tv"]
 _PRORES = ["-c:v", "prores_ks", "-profile:v", "4"]
 OPS = {"LUT_APPLY": {"lut_path": "invert.cube"}, "PRIMARY_CORRECTION": {"exposure": 0.5, "saturation": 1.3}}
-DROP_OPS = {"HDR_TO_SDR": {"force": True}, "LUT_APPLY": {"lut_path": "invert.cube"}, "PRIMARY_CORRECTION": {"saturation": 0.5},
+DROP_OPS = {"HDR_TO_SDR": {}, "LUT_APPLY": {"lut_path": "invert.cube"}, "PRIMARY_CORRECTION": {"saturation": 0.5},
             "OCIO_TRANSFORM": {"source_space": "ACEScct", "destination_space": "ACEScg", "output_tags": "bt709"},
             "MATCH_CAMERA": {"reference_path": "bands_4444.mov"}, "LEGALIZE": {}}
 
@@ -55,6 +57,8 @@ def bands(tmp_path_factory):
     _ff("-f", "lavfi", "-i", f"{_BANDS},premultiply=inplace=1,{_TO_709},format=yuva444p10le", *_PRORES, "-pix_fmt", "yuva444p10le", *_TAGS,
         str(d / "bands_4444_premult.mov"))
     _ff("-f", "lavfi", "-i", f"{_BANDS},{_TO_709},format=yuv444p10le", *_PRORES, "-pix_fmt", "yuv444p10le", *_TAGS, str(d / "bands_4444_opaque.mov"))
+    _ff("-f", "lavfi", "-i", f"{_BANDS},{_TO_709},format=yuva444p10le", *_PRORES, "-pix_fmt", "yuva444p10le", *_PQ_TAGS, str(d / "bands_4444_pq.mov"))
+    _ff("-f", "lavfi", "-i", f"{_BANDS},{_TO_709},format=yuv444p10le", *_PRORES, "-pix_fmt", "yuv444p10le", *_PQ_TAGS, str(d / "bands_4444_pq_opaque.mov"))
     _ff("-f", "lavfi", "-i", _BANDS, "-c:v", "qtrle", "-pix_fmt", "argb", str(d / "bands_rle.mov"))
     _ff("-f", "lavfi", "-i", f"{_BANDS},premultiply=inplace=1", "-c:v", "qtrle", "-pix_fmt", "argb", str(d / "bands_rle_premult.mov"))
     _ff("-f", "lavfi", "-i", f"{_BANDS},format=rgb24", "-c:v", "qtrle", "-pix_fmt", "rgb24", str(d / "bands_rle_opaque.mov"))
@@ -280,14 +284,9 @@ def test_drop_alpha_flattens_a_premultiplied_source_over_black(ws, capabilities,
 @pytest.mark.parametrize("op_type", sorted(DROP_OPS))
 def test_drop_alpha_lets_every_reencoding_operation_write_an_opaque_picture(ws, capabilities, op_type):
     assert set(DROP_OPS) == set(REENCODING_OPERATIONS)
-    code, d = _run(_doc("bands_4444.mov", op_type, DROP_OPS[op_type], drop_alpha=True))
-    if op_type == "HDR_TO_SDR":
-        # the one exception, on every build (ADR-33): --to-sdr hands the alpha plane to zscale, which fails with FFmpeg 8.0.1
-        # and 9.0.2 (measured in CI; 6.1 runs it), so it is refused before anything runs
-        assert code == 6 and d["error"]["details"] == {"reason": "alpha_input_not_supported", "pix_fmt": d["error"]["details"]["pix_fmt"],
-                                                       "op_ids": ["x"]}, d.get("error")
-        assert "OCIO_TRANSFORM" in d["error"]["message"] and not (ws / "out").exists() and not (ws / ".color-grading").exists()
-        return
+    # HDR_TO_SDR on the PQ-tagged copy, with no force: tone-mapping a BT.709-tagged picture with force fails inside
+    # --to-sdr's zscale chain with FFmpeg 8.0.1 and 9.0.2, with or without an alpha plane (measured in CI, ADR-33)
+    code, d = _run(_doc("bands_4444_pq.mov" if op_type == "HDR_TO_SDR" else "bands_4444.mov", op_type, DROP_OPS[op_type], drop_alpha=True))
     missing = _required_unsupported(capabilities, op_type)
     if missing:     # this checkout cannot run the operation at all (e.g. MATCH_CAMERA before ffmpeg-skill 3.1.6)
         assert code != 0 and d["error"]["code"] == "TOOL_ERROR", d.get("error")
@@ -301,10 +300,10 @@ def test_drop_alpha_lets_every_reencoding_operation_write_an_opaque_picture(ws, 
     assert not any("neither the request" in w for w in d["warnings"])       # nothing is graded with the alpha kept
 
 
-def test_the_same_picture_without_alpha_is_tone_mapped(ws, capabilities):
-    """The control for HDR_TO_SDR's refusal above: the opaque twin (the same colour planes, no alpha) runs through --to-sdr
-    wherever this checkout can tone-map at all, so the refusal is about the alpha plane, not the picture."""
-    code, d = _run(_doc("bands_4444_opaque.mov", "HDR_TO_SDR", {"force": True}))
+def test_the_same_hdr_picture_without_alpha_is_tone_mapped_too(ws, capabilities):
+    """The control for HDR_TO_SDR under drop_alpha above: the opaque twin of the PQ-tagged source (the same colour planes,
+    no alpha) runs through --to-sdr wherever this checkout can tone-map at all."""
+    code, d = _run(_doc("bands_4444_pq_opaque.mov", "HDR_TO_SDR", {}))
     missing = _required_unsupported(capabilities, "HDR_TO_SDR")
     if missing:
         assert code != 0 and set(d["error"]["details"]["missing"]) == set(missing), d.get("error")
@@ -477,16 +476,6 @@ def test_alpha_mode_on_a_source_without_an_alpha_plane_is_said(tmp_path):
     assert d["ok"]
     (w,) = d["warnings"]
     assert "shows no alpha plane" in w and "VP9" in w
-
-
-def test_hdr_to_sdr_takes_no_alpha_input_even_with_drop_alpha_but_an_opaque_one_after_a_drop(tmp_path):
-    hdr = {"op_id": "h", "type": "HDR_TO_SDR", "input": "source", "parameters": {"force": True}}
-    d = _plan(tmp_path, ALPHA_VIDEO, ops=[hdr], drop_alpha=True)
-    assert d["error"]["details"]["reason"] == "alpha_input_not_supported" and d["error"]["details"]["op_ids"] == ["h"]
-    after = [{"op_id": "l", "type": "LUT_APPLY", "input": "source", "parameters": {"lut_path": "grade.cube"}}, {**hdr, "input": "op:l"}]
-    d = _plan(tmp_path, ALPHA_VIDEO, ops=after, drop_alpha=True)
-    assert d["ok"], d.get("error")
-    assert [s.get("alpha", {}).get("drop_alpha") for s in d["plan"]["steps"]] == [True, None]
 
 
 def test_drop_alpha_is_planned_for_the_reencodes_of_an_alpha_input_only(tmp_path):

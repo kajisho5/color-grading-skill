@@ -183,8 +183,7 @@ def skill_contract() -> Dict[str, Any]:
                                                 "alpha record of results and provenance"},
                   "drop_alpha": {"request_field": "project.source.drop_alpha", "type": "boolean", "default": False,
                                  "effect": "every re-encoding operation on an alpha input writes the opaque H.264 line on purpose (none is refused "
-                                           "for the alpha but HDR_TO_SDR, whose zscale chain fails on an alpha input with some FFmpeg builds: "
-                                           "alpha_input_not_supported); RETAG / STRIP_DOVI still copy the stream and must keep the alpha",
+                                           "for the alpha); RETAG / STRIP_DOVI still copy the stream and must keep the alpha",
                                  "verification": "the written file must store no alpha plane (alpha_not_dropped); color's alpha step may report "
                                                  "alpha_dropped, any other failure is a VALIDATION_ERROR",
                                  "colour": "kept as stored: a premultiplied source reads as composited over black, a straight one shows the colour "

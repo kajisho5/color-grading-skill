@@ -648,19 +648,14 @@
     unchanged (measured: alpha and colour bit-identical after RETAG on the premultiplied ProRes 4444 fixture).
   - *`drop_alpha`: the alpha given up only when asked.* `project.source.drop_alpha: true` (boolean, default `false`):
     every re-encoding operation on an alpha input writes the opaque H.264 line on purpose and none is refused for the
-    alpha, except HDR_TO_SDR (below); RETAG / STRIP_DOVI still copy the stream and must still store the alpha (a
+    alpha; RETAG / STRIP_DOVI still copy the stream and must still store the alpha (a
     fallback re-encode that loses it is `alpha_lost`, as without `drop_alpha`); what follows an opaque intermediate is
     opaque and gets no flag. A re-encode under `drop_alpha` whose output still stores an alpha plane is a
     `VALIDATION_ERROR` (`alpha_not_dropped`), and a failed `alpha` step for any reason other than `alpha_dropped` stays
     one.
     color `--drop-alpha` is passed where detected (`ffmpeg-skill/color:drop-alpha`, optional flag group
     `color_drop_alpha`, ADR-29's pattern); without it the same opaque line is written and color's `alpha` step, on a
-    checkout that has one, reports `alpha_dropped`, which is then the expected outcome, not a `VALIDATION_ERROR`.
-    HDR_TO_SDR takes no alpha input even under `drop_alpha` (`UNSUPPORTED_FORMAT`, `alpha_input_not_supported`, on every
-    build): color `--to-sdr` hands the alpha plane to its zscale chain, which failed in CI with FFmpeg 8.0.1 (Ubuntu) and
-    9.0.2 (Windows) with `AVERROR_EXTERNAL` while 6.1 ran it, and the same picture without alpha tone-maps on each of
-    them (the control test). The ways out named: flatten first (ffmpeg-skill/export), or OCIO_TRANSFORM (a baked LUT,
-    no zscale) under `drop_alpha`; an HDR_TO_SDR after a dropped re-encode is opaque and runs. The
+    checkout that has one, reports `alpha_dropped`, which is then the expected outcome, not a `VALIDATION_ERROR`. The
     colour is kept as stored: a premultiplied source reads as composited over black, a straight one shows the colour its
     transparent pixels hold. Without `drop_alpha` an output setting that would drop the alpha is refused before anything
     runs: an output that keeps the alpha with an `expect.pix_fmt` that has no alpha plane (`alpha_not_preserved`,
@@ -691,7 +686,10 @@
     9.0.2. The cause is inside ffmpeg-skill/FFmpeg and cannot be steered from here, so PRIMARY_CORRECTION on a Y'CbCr
     alpha source always carries a warning naming it, and the test bounds the shift at 12 codes where it shows. FFmpeg's
     own premultiply also rounds a code differently from 8.0 on (181 under alpha 255 becomes 180); the fixture check
-    allows that code.
+    allows that code. Not about alpha, found on the way: HDR_TO_SDR with `force` on a BT.709-tagged ProRes 4444 picture
+    fails inside `--to-sdr`'s zscale chain with FFmpeg 8.0.1 and 9.0.2 (`AVERROR_EXTERNAL`), with or without an alpha
+    plane (its opaque twin fails the same way), while 6.1 runs it; the `drop_alpha` test therefore tone-maps a
+    PQ-tagged alpha source, with its opaque twin as the control.
   - *Also measured, not changed here.* An RGB alpha source tagged colour space `gbr`, which FFmpeg's PNG encoder writes
     in `.mov` and `.mkv`, makes color `--keep-alpha` fail: it passes the source's tag on as `-colorspace gbr`, which
     FFmpeg's option parser does not accept ("Undefined constant ... 'gbr'"). LUT_APPLY / PRIMARY_CORRECTION on such a
@@ -701,8 +699,8 @@
     premultiply in RGB before the alpha line, named in the `alpha` step. With it this skill passes the request's
     `alpha_mode`, lifts `alpha_premultiplied`, and step 8 can be ticked. (2) For an RGB line, write the colour-space tag
     under the encoder option's name (`rgb`) or leave it out, so a PNG source tagged `gbr` can be graded. (3) Drop the
-    alpha before `--to-sdr`'s zscale chain (or keep it beside the chain, as `--keep-alpha` does for `--lut`), so an HDR
-    alpha master can be tone-mapped. (4) Find why `--correct --keep-alpha` on a Y'CbCr source moves colours with FFmpeg
+    alpha before `--to-sdr`'s zscale chain, and find why that chain fails with FFmpeg 8.0 / 9.0 on a BT.709-tagged
+    picture under `--force`. (4) Find why `--correct --keep-alpha` on a Y'CbCr source moves colours with FFmpeg
     8.0.1 while `--correct` on the same picture without alpha does not.
   - *Contract.* Additive: `alpha.alpha_mode`, `alpha.drop_alpha`, `alpha.output_settings`, the reworded
     `alpha.keep_alpha.premultiplied_source`, `request_extensions` (the new source fields; the pinned `request.shape`

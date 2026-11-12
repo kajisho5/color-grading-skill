@@ -320,8 +320,7 @@ Stated as boundary, not as bugs to be worked around with a private filter string
   a PNG source tagged colour space `gbr` (FFmpeg's PNG encoder writes that) fails inside ffmpeg-skill/color
   `--keep-alpha` (ADR-33). `PRIMARY_CORRECTION` on a Y'CbCr alpha source (ProRes 4444) can shift colours on some FFmpeg
   builds too (measured: 11 codes with 8.0.1), with a warning. `LEGALIZE` on an alpha source is refused unless
-  `drop_alpha` asks for an opaque result: a broadcast delivery is opaque. `HDR_TO_SDR` takes no alpha input even then
-  (its zscale chain fails on one with FFmpeg 8.0 / 9.0).
+  `drop_alpha` asks for an opaque result: a broadcast delivery is opaque.
 
 ## Testing
 
