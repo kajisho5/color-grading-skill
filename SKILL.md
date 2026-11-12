@@ -29,6 +29,9 @@ Rules for a calling agent:
 5. Read `results[].status`, `outputs[].provenance` and `error` from the JSON; the exit code is 0 only when `ok`
    is true.
 6. An alpha source (ProRes 4444, qtrle, PNG) keeps its alpha through `LUT_APPLY` / `PRIMARY_CORRECTION` when ffmpeg-skill
-   has `--keep-alpha` (its colour is taken as straight); other re-encoding operations refuse it (`alpha_not_preserved`).
+   has `--keep-alpha`; other re-encoding operations refuse it (`alpha_not_preserved`). Say how its colour is stored with
+   `project.source.alpha_mode: straight | premultiplied` (unsaid: PNG is straight, anything else is taken as straight
+   with a warning). A premultiplied source is refused for those grades (`alpha_premultiplied`: ffmpeg-skill cannot
+   un-premultiply it). `project.source.drop_alpha: true` asks for an opaque result instead (ADR-33).
 
 See README.md for the schemas, operation table, error codes and limitations.

@@ -13,7 +13,8 @@ from . import legalize as legalize_mod
 from . import ocio as ocio_mod
 from .executor import (ALPHA_GRADING_OPERATIONS, ALPHA_LINE_DEFAULT, ALPHA_LINE_ENCODERS, ALPHA_LINE_EXTENSIONS, ALPHA_LINE_FOR_CODEC, ALPHA_MODE, ALPHA_PIX_FMT_RE,
                        DURATION_TOLERANCE, OPTIONAL_CHECKOUT_CAPABILITIES, REENCODING_OPERATIONS, TOOL_FOR, WORK_DIR_NAME)
-from .model import (CUBE_EXTENSIONS, FORBIDDEN_KEYS, ID_RE, MAX_LUT_BYTES, MAX_OPERATIONS, OPERATION_TYPES, OUTPUT_FORMATS, REF_RE,
+from .model import (ALPHA_MODE_ASSUMED, ALPHA_MODE_BY_CODEC, ALPHA_MODE_RULES, ALPHA_MODES,
+                    CUBE_EXTENSIONS, FORBIDDEN_KEYS, ID_RE, MAX_LUT_BYTES, MAX_OPERATIONS, OPERATION_TYPES, OUTPUT_FORMATS, REF_RE,
                     HLG_TRANSFER, OPERATION_ALIASES, TONEMAP_DEFAULT, TONEMAP_HLG_DEFAULT, TONEMAP_RULES, REQUEST_SCHEMA_ID, RETAG_TAGS, RETAG_TARGETS, TONEMAPS, UNSUPPORTED_OPERATIONS, X264_PRESETS)
 
 CONTRACT_SCHEMA_ID = f"{SKILL_ID}/contract@{CONTRACT_SCHEMA_VERSION}"
@@ -149,7 +150,8 @@ def skill_contract() -> Dict[str, Any]:
                   "policy": "a source with an alpha plane is refused (UNSUPPORTED_FORMAT, reason alpha_not_preserved) for every operation that re-encodes "
                             "through ffmpeg-skill/color without keeping the alpha; a stream copy keeps it and an output without it fails validation (alpha_lost). "
                             "Where ffmpeg-skill/color has --keep-alpha, LUT_APPLY and PRIMARY_CORRECTION grade with the alpha kept (keep_alpha; "
-                            "docs/decisions.md ADR-25, ADR-30)",
+                            "docs/decisions.md ADR-25, ADR-30). The request says how the colour is stored (alpha_mode) and whether an opaque "
+                            "result is wanted instead (drop_alpha); a premultiplied source is refused for a grade that keeps the alpha (ADR-33)",
                   # ADR-30: additive keys; `refused_for` above stays the list for an ffmpeg-skill without --keep-alpha
                   "keep_alpha": {"operations": list(ALPHA_GRADING_OPERATIONS), "requires": "ffmpeg-skill/color:keep-alpha (--keep-alpha, --alpha-codec, --alpha-mode)",
                                  "refused_for_with_keep_alpha": [t for t in REENCODING_OPERATIONS if t not in ALPHA_GRADING_OPERATIONS],
@@ -160,11 +162,38 @@ def skill_contract() -> Dict[str, Any]:
                                               "code (a warning says so); an 8-bit alpha is bit-identical",
                                  "not_detected": "a VP9 stream with an alpha layer probes as yuv420p through ffmpeg-skill/probe: it is graded without "
                                                  "--keep-alpha and color's failed alpha step makes it a VALIDATION_ERROR (alpha_lost)",
-                                 "premultiplied_source": "not un-premultiplied: the source's colour is taken as straight, as ffmpeg-skill/color takes it",
+                                 "premultiplied_source": "refused (UNSUPPORTED_FORMAT, reason alpha_premultiplied): ffmpeg-skill/color --keep-alpha "
+                                                         "grades the colour as stored and has no un-premultiply step (alpha_mode, ADR-33)",
                                  "verification": "ffmpeg-skill/color's alpha step (written alpha against the source's, every frame) must pass, else "
                                                  "VALIDATION_ERROR (alpha_lost / alpha_mismatch / alpha_unverified); the output must store an alpha plane",
                                  "output": "the alpha line's pixel format (e.g. yuva444p12le for ProRes 4444) with the source's colour tags, not yuv420p",
-                                 "recorded_as": "alpha {kept, precision_bits, alpha_codec, alpha_mode, source_colour, tool, verification} in results and provenance"}},
+                                 "recorded_as": "alpha {kept, precision_bits, alpha_codec, alpha_mode, source_colour, tool, verification, "
+                                                "alpha_mode_selection} in results and provenance"},
+                  # ADR-33: how the colour beside the alpha is stored, and an opaque result on request; additive keys
+                  "alpha_mode": {"request_field": "project.source.alpha_mode", "values": list(ALPHA_MODES), "default": None,
+                                 "when_omitted": {"by_codec": dict(ALPHA_MODE_BY_CODEC), "otherwise": ALPHA_MODE_ASSUMED, "warning": True},
+                                 "rules": dict(ALPHA_MODE_RULES),
+                                 "detection": "an alpha plane is read from ffprobe's pix_fmt through ffmpeg-skill/probe (pix_fmt_pattern); no format "
+                                              "field that probe reports says whether the colour is premultiplied, so only a format whose specification "
+                                              "fixes it (PNG: straight) gives a default",
+                                 "straight": "LUT_APPLY / PRIMARY_CORRECTION grade the colour with the alpha kept (keep_alpha)",
+                                 "premultiplied": "refused for LUT_APPLY / PRIMARY_CORRECTION while the alpha is kept (alpha_premultiplied); RETAG / "
+                                                  "STRIP_DOVI copy it unchanged; drop_alpha flattens it",
+                                 "recorded_as": "alpha_mode_selection {alpha_mode, rule, format_states, codec} in plan.alpha, plan steps, and the "
+                                                "alpha record of results and provenance"},
+                  "drop_alpha": {"request_field": "project.source.drop_alpha", "type": "boolean", "default": False,
+                                 "effect": "every re-encoding operation on an alpha input writes the opaque H.264 line on purpose (none is refused "
+                                           "for the alpha); RETAG / STRIP_DOVI still copy the stream and must keep the alpha",
+                                 "verification": "the written file must store no alpha plane (alpha_not_dropped); color's alpha step may report "
+                                                 "alpha_dropped, any other failure is a VALIDATION_ERROR",
+                                 "colour": "kept as stored: a premultiplied source reads as composited over black, a straight one shows the colour "
+                                           "its transparent pixels hold",
+                                 "uses": "ffmpeg-skill/color --drop-alpha where detected (ffmpeg-skill/color:drop-alpha); without it the same opaque "
+                                         "line is written and color's alpha step reporting alpha_dropped is expected",
+                                 "recorded_as": "alpha {kept: false, dropped: true, requested_by, tool, reported_dropped, verification, "
+                                                "alpha_mode_selection}"},
+                  "output_settings": "an output that keeps the alpha with an expect.pix_fmt that has no alpha plane is refused before anything "
+                                     "runs (alpha_not_preserved); the alpha line must fit the source's container (containers)"},
         # ADR-29: what LEGALIZE adds where the located ffmpeg-skill offers it; without it, the soft clip alone and no shares
         "legalize": {"clamp": {"requires": "ffmpeg-skill/color:legalize", "how": "color --lut <soft clip> --legalize <profile>: one encode, clamped after the 4:2:0 conversion",
                                "verification": "ffmpeg-skill/color's legal_levels step must pass (at most 1 % of one frame's luma or chroma samples out), else "
@@ -210,10 +239,16 @@ def skill_contract() -> Dict[str, Any]:
                                                     "legalize (LEGALIZE: profile, limits, knee, lut_sha256, clamp {applied, tool, standard, verification, residual} "
                                                     "or {applied: false, reason}, out_of_range_share {measured, tool, standard, unit, before, after} "
                                                     "or {measured: false, reason})",
-                                                    "alpha (LUT_APPLY / PRIMARY_CORRECTION on an alpha source: kept, alpha_codec, alpha_mode, verification)",
+                                                    "alpha (LUT_APPLY / PRIMARY_CORRECTION on an alpha source: kept, alpha_codec, alpha_mode, verification, "
+                                                    "alpha_mode_selection; a re-encode under drop_alpha: kept false, dropped true, requested_by, tool, "
+                                                    "reported_dropped, verification)",
                                                     "tonemap_selection (HDR_TO_SDR: tonemap, rule request | hlg_default | default, input_transfer)"],
                                   "identity": "OCIO_TRANSFORM: the config's serialized sha256 and the baked LUT's sha256; MATCH_CAMERA: the reference video's sha256; "
-                                              "LEGALIZE: the LUT's sha256 and the clamp's profile (null without the clamp)"},
+                                              "LEGALIZE: the LUT's sha256 and the clamp's profile (null without the clamp); a re-encode of an alpha "
+                                              "input: alpha_handling {alpha_line, drop_alpha}"},
+        # optional request fields accepted beside the pinned request.shape (ADR-26, ADR-33)
+        "request_extensions": {"project.source": {"alpha_mode?": "|".join(ALPHA_MODES), "drop_alpha?": False},
+                               "note": "request.shape is the 0.4.0 shape consumers pin; these optional fields are accepted beside it (alpha)"},
         "request_types": {"operation_types": sorted(OPERATION_TYPES), "aliases": sorted(OPERATION_ALIASES),
                           "note": "request.shape lists the 0.4.0 types as an example; every type above is accepted"},
         "schema_versions": {"contract": str(CONTRACT_SCHEMA_VERSION), "request": str(REQUEST_SCHEMA_VERSION), "response": str(RESPONSE_SCHEMA_VERSION), "doctor": str(DOCTOR_SCHEMA_VERSION)},

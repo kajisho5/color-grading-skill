@@ -2,7 +2,8 @@
 
 Concepts (docs/architecture.md):
   ColorProject   one source + a graph of colour operations + one or more outputs
-  ColorSource    one media file (path); fingerprinted (sha256) at execution
+  ColorSource    one media file (path); fingerprinted (sha256) at execution; for an alpha source, how its colour is
+                 stored (alpha_mode) and whether an opaque result is wanted (drop_alpha), ADR-33
   ColorOperation typed node of the operation graph: op_id, type, input (ref: "source" or "op:<id>"), parameters
   ColorOutput    a terminal artifact: output_id, operation ref, path, format, expectations
   OperationDependency / OperationResult  graph.py / executor.py
@@ -81,6 +82,36 @@ def select_tonemap(requested: Optional[str], input_transfer: Optional[str]) -> D
     else:
         curve, rule = TONEMAP_DEFAULT, "default"
     return {"tonemap": curve, "rule": rule, "input_transfer": input_transfer}
+
+
+# How an alpha source's colour is stored beside its alpha (ADR-33): `project.source.alpha_mode`. Containers rarely say,
+# and ffmpeg-skill/probe (ffprobe) reports no premultiplication field for any format, so the request states it. When it
+# does not, the default comes from a format whose specification fixes it (PNG: the colour is never premultiplied);
+# every other format (ProRes 4444, QuickTime Animation, VP9, FFV1, ...) does not state it, and the colour is taken as
+# straight with a warning, never silently.
+ALPHA_MODES = ("straight", "premultiplied")
+ALPHA_MODE_ASSUMED = "straight"
+# ffmpeg-skill/probe codec name -> the alpha mode its format specification fixes
+ALPHA_MODE_BY_CODEC: Dict[str, str] = {"png": "straight"}
+ALPHA_MODE_RULES = {"request": "the request named it (project.source.alpha_mode, always wins)",
+                    "format": "not in the request; the source's format fixes it (PNG stores straight, unassociated alpha)",
+                    "assumed": f"not in the request and the source's format does not state it: taken as {ALPHA_MODE_ASSUMED}, with a warning"}
+
+
+def select_alpha_mode(requested: Optional[str], codec: Optional[str]) -> Dict[str, Any]:
+    """How an alpha source's colour is taken and why (ADR-33), recorded as alpha_mode_selection in the plan, results and
+    provenance. `format_states` is what the format itself fixes (None when it says nothing), kept beside an explicit
+    request so a disagreement stays visible."""
+    stated = ALPHA_MODE_BY_CODEC.get(str(codec or ""))
+    if requested is not None:
+        mode, rule = requested, "request"
+    elif stated is not None:
+        mode, rule = stated, "format"
+    else:
+        mode, rule = ALPHA_MODE_ASSUMED, "assumed"
+    return {"alpha_mode": mode, "rule": rule, "format_states": stated, "codec": codec}
+
+
 RETAG_TARGETS = ("bt709", "bt2020-pq", "bt2020-hlg", "bt601")
 # color.py's own curves filter built-in presets (its CURVES_PRESETS, `ffmpeg -h filter=curves`), excluding the
 # filter's own "none" (0): omitting --curves already gets that identity result without a curves filter term.
@@ -228,6 +259,8 @@ OPERATION_ALIASES: Dict[str, Dict[str, Any]] = {
 class ColorSource:
     source_id: str
     path: str
+    alpha_mode: Optional[str] = None          # straight | premultiplied; None: from the format, else assumed (ADR-33)
+    drop_alpha: bool = False                  # the caller wants opaque re-encodes of an alpha source (ADR-33)
 
 
 @dataclass
@@ -470,11 +503,18 @@ def parse_request(doc: Any) -> ColorRequest:
     p = _obj(d["project"], "project", ("project_id", "source", "operations", "outputs"), ("project_id", "source", "outputs"))
     project_id = _id(p["project_id"], "project.project_id")
 
-    sd = _obj(p["source"], "project.source", ("source_id", "path"), ("source_id", "path"))
+    sd = _obj(p["source"], "project.source", ("source_id", "path", "alpha_mode", "drop_alpha"), ("source_id", "path"))
     source_id = _id(sd["source_id"], "project.source.source_id")
     if not isinstance(sd["path"], str) or not sd["path"]:
         raise ColorError("INVALID_REQUEST", "project.source.path must be a non-empty string")
-    source = ColorSource(source_id, sd["path"])
+    alpha_mode = sd.get("alpha_mode")
+    if alpha_mode is not None and alpha_mode not in ALPHA_MODES:
+        raise ColorError("INVALID_REQUEST", f"project.source.alpha_mode must be one of {list(ALPHA_MODES)}",
+                         {"field": "project.source.alpha_mode", "allowed": list(ALPHA_MODES)})
+    drop_alpha = sd.get("drop_alpha", False)
+    if not isinstance(drop_alpha, bool):
+        raise ColorError("INVALID_REQUEST", "project.source.drop_alpha must be a boolean", {"field": "project.source.drop_alpha"})
+    source = ColorSource(source_id, sd["path"], alpha_mode, drop_alpha)
 
     ops_raw = p.get("operations", [])
     if not isinstance(ops_raw, list):

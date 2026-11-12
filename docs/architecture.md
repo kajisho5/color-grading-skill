@@ -25,7 +25,7 @@ approvals; transcription; subtitles; QC; container/format conversion (that is ff
 | concept | fields | notes |
 |---|---|---|
 | `ColorProject` | `project_id`, `source`, `operations[]`, `outputs[]` | one request = one project, one source video |
-| `ColorSource` | `source_id`, `path` | fingerprinted (sha256) at execution; must have a video stream |
+| `ColorSource` | `source_id`, `path`, `alpha_mode?` (`straight` \| `premultiplied`), `drop_alpha?` | fingerprinted (sha256) at execution; must have a video stream; the alpha fields matter only for a source with an alpha plane (ADR-33) |
 | `ColorOperation` | `op_id`, `type`, `input` (ref `"source"` or `"op:<id>"`), `parameters` | every implemented type takes exactly one input; parameters validated per type (`OPERATION_TYPES`) |
 | `ColorOutput` | `output_id`, `operation` (ref), `path`, `format`, `overwrite?`, `expect?` | terminal artifact; `format`'s extension must match the source's |
 | `OperationDependency` (`graph.py`) | node `inputs` (0 or 1), `consumers[]` | topological order = Kahn with smallest ready id first |
@@ -54,7 +54,10 @@ edited at the same path does not. `plan_id` hashes every node identity plus the 
 
 1. Resolve and probe the source through `ffmpeg-skill/probe` (read-only, also under dry run), refuse a source
    without a video stream, fingerprint it (sha256), and record its colour metadata (`color_space`,
-   `color_primaries`, `color_transfer`, `color_range`, `pix_fmt`, `hdr`, `dolby_vision`) as OBSERVED facts.
+   `color_primaries`, `color_transfer`, `color_range`, `pix_fmt`, `hdr`, `dolby_vision`) as OBSERVED facts. An alpha
+   source (alpha plane in `pix_fmt`) gets its alpha mode resolved (request, else PNG = straight, else straight with a
+   warning) and is refused where its alpha would be lost or a premultiplied colour graded, unless `drop_alpha` asks
+   for an opaque result (ADR-25, ADR-30, ADR-33).
 2. Resolve every `LUT_APPLY` operation's `lut_path` through the LUT PathPolicy, check the `.cube` extension and a
    size ceiling, and hash it (read-only, also under dry run).
 3. Resolve outputs (workspace, collisions with the input, existence, container match with the source).

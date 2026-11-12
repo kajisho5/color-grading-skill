@@ -1,5 +1,5 @@
-"""ffmpeg-skill's optional features (docs/decisions.md ADR-29, ADR-30): check --levels, color --legalize and color
---keep-alpha are detected flag by flag, used only where detected as supported, and every other checkout keeps the
+"""ffmpeg-skill's optional features (docs/decisions.md ADR-29, ADR-30, ADR-33): check --levels, color --legalize, color
+--keep-alpha and color --drop-alpha are detected flag by flag, used only where detected as supported, and every other checkout keeps the
 earlier behaviour (LEGALIZE's soft clip alone with the shares not measured; an alpha source refused). No ffmpeg here:
 the checkout's contract and ffmpeg-skill's answers are stubbed; the real runs are in test_legalize.py / test_alpha.py."""
 import json
@@ -17,7 +17,8 @@ from color_grading.graph import Node
 from color_grading.security import PathPolicy
 from conftest import request_doc
 
-ALL = {"ffmpeg-skill/check:levels": "supported", "ffmpeg-skill/color:legalize": "supported", "ffmpeg-skill/color:keep-alpha": "supported"}
+ALL = {"ffmpeg-skill/check:levels": "supported", "ffmpeg-skill/color:legalize": "supported", "ffmpeg-skill/color:keep-alpha": "supported",
+       "ffmpeg-skill/color:drop-alpha": "supported"}
 
 
 def _tools(color_extra=(), check=None):
@@ -33,6 +34,7 @@ def _tools(color_extra=(), check=None):
 def test_a_checkout_without_the_optional_flags_is_still_usable_and_says_so():
     problems, f = check_tools(_tools())
     assert problems == [] and f["color_legalize"] is False and f["color_keep_alpha"] is False and f["check_tool"] is False
+    assert f["color_drop_alpha"] is False
 
 
 def test_each_optional_feature_needs_all_of_its_flags():
@@ -41,19 +43,23 @@ def test_each_optional_feature_needs_all_of_its_flags():
     assert f["check_tool"] is False and set(f["check_missing_flags"]) == {"platform", "no_loudness", "levels_window", "levels_tolerance", "json"}
     _, f = check_tools(_tools(color_extra=["legalize", "keep_alpha", "alpha_codec", "alpha_mode"], check=list(OPTIONAL_TOOL_FLAGS["check"])))
     assert f["color_legalize"] is f["color_keep_alpha"] is f["check_tool"] is True
+    assert f["color_drop_alpha"] is False                                        # --drop-alpha is a group of its own
+    _, f = check_tools(_tools(color_extra=["drop_alpha"]))
+    assert f["color_drop_alpha"] is True and f["color_keep_alpha"] is False
 
 
 @pytest.mark.parametrize("value,status", [(True, "supported"), (False, "unsupported"), (None, "unknown")])
 def test_optional_capabilities_map_the_detected_features(value, status):
-    info = SkillInfo(Path("."), "x", "2.0", {}, [], {"check_tool": value, "color_legalize": value, "color_keep_alpha": value})
+    info = SkillInfo(Path("."), "x", "2.0", {}, [], {"check_tool": value, "color_legalize": value, "color_keep_alpha": value, "color_drop_alpha": value})
     caps = capability_status(info, {"ffmpeg": "6.1", "ffprobe": "6.1", "available": ["filter:lut3d"]})
     assert {c: caps[c] for c in OPTIONAL_CHECKOUT_CAPABILITIES} == {c: status for c in OPTIONAL_CHECKOUT_CAPABILITIES}
 
 
 def test_contract_names_the_optional_flags_and_tool():
     c = skill_contract()
-    assert c["ffmpeg_skill"]["optional_flags"] == {"color": {"color_legalize": ["legalize"], "color_keep_alpha": ["keep_alpha", "alpha_codec", "alpha_mode"]}}
-    assert set(c["ffmpeg_skill"]["flags_used"]["color"]) >= {"legalize", "keep_alpha", "alpha_codec", "alpha_mode"}
+    assert c["ffmpeg_skill"]["optional_flags"] == {"color": {"color_legalize": ["legalize"], "color_keep_alpha": ["keep_alpha", "alpha_codec", "alpha_mode"],
+                                                             "color_drop_alpha": ["drop_alpha"]}}
+    assert set(c["ffmpeg_skill"]["flags_used"]["color"]) >= {"legalize", "keep_alpha", "alpha_codec", "alpha_mode", "drop_alpha"}
     assert c["ffmpeg_skill"]["flags_used"]["check"] == list(OPTIONAL_TOOL_FLAGS["check"]) and set(FLAGS_USED["color"]) >= set(OPTIONAL_FLAGS["color"]["color_legalize"])
     assert c["optional_capabilities"] == list(OPTIONAL_CHECKOUT_CAPABILITIES)
     assert c["alpha"]["keep_alpha"]["operations"] == ["LUT_APPLY", "PRIMARY_CORRECTION"]
@@ -139,11 +145,12 @@ class _StubSkill:
         return {"duration": 2.0, "video": dict(self.video), "audio": None}
 
 
-def _plan(tmp_path, ops, caps, video, src="clip.mov"):
+def _plan(tmp_path, ops, caps, video, src="clip.mov", alpha_mode=None):
     (tmp_path / src).write_bytes(b"x")
     (tmp_path / "grade.cube").write_text("LUT_3D_SIZE 2\n" + "0 0 0\n" * 8)
     ext = src.rsplit(".", 1)[1]
-    doc = request_doc(ops, source={"source_id": "s", "path": str(tmp_path / src)},
+    source = {"source_id": "s", "path": str(tmp_path / src), **({"alpha_mode": alpha_mode} if alpha_mode else {})}
+    doc = request_doc(ops, source=source,
                       outputs=[{"output_id": "o", "operation": f"op:{ops[-1]['op_id']}", "path": str(tmp_path / "out" / f"o.{ext}"), "format": ext}])
     ex = Executor(PathPolicy(str(tmp_path)), _StubSkill(video), dry_run=True, capabilities=caps)
     return ex.response(doc)
@@ -171,7 +178,11 @@ def test_keep_alpha_is_planned_with_the_line_of_the_input_codec(tmp_path):
 def test_no_rgb_warning_for_a_ycbcr_alpha_master_or_a_correction(tmp_path):
     assert not any("RGB alpha source" in w for w in _plan(tmp_path, [LUT], ALL, ALPHA_VIDEO)["warnings"])
     pc = {"op_id": "p", "type": "PRIMARY_CORRECTION", "input": "source", "parameters": {"gamma": 1.2}}
-    assert not _plan(tmp_path, [pc], ALL, {**ALPHA_VIDEO, "codec": "qtrle", "pix_fmt": "argb"})["warnings"]
+    # with the colour's alpha mode stated (ADR-33) a correction on an RGB alpha source warns about nothing at all ...
+    assert not _plan(tmp_path, [pc], ALL, {**ALPHA_VIDEO, "codec": "qtrle", "pix_fmt": "argb"}, alpha_mode="straight")["warnings"]
+    # ... and without it the only warning is that the mode was assumed, not the RGB one
+    (w,) = _plan(tmp_path, [pc], ALL, {**ALPHA_VIDEO, "codec": "qtrle", "pix_fmt": "argb"})["warnings"]
+    assert "neither the request" in w and "RGB alpha source" not in w
 
 
 @pytest.mark.parametrize("pix_fmt,deep", [("yuva444p10le", True), ("yuva444p12le", True), ("gbrap16le", True), ("rgba64le", True),
