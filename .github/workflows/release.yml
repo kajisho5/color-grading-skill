@@ -39,6 +39,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 .github/scripts/dependabot_release_labels.py
 
+      # Velisa ADR-023: pull requests labelled only chore / ci / docs / test release nothing. release-drafter's
+      # `default` cannot say "no release", so release_gate.py answers that from the merged pull requests' labels.
+      - name: Decide whether anything merged since the latest tag is releasable
+        id: gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 .github/scripts/release_gate.py
+
       # v7 `dry-run: true` resolves the version from the merged PRs' labels without creating a release. v6.4.0 with
       # `disable-releaser: true` (used until docs/decisions.md ADR-27) skips that resolution altogether, so its
       # `resolved_version` output was always empty and every push after v0.4.0 ended "nothing to release".
@@ -59,6 +67,7 @@ jobs:
         id: version
         env:
           RESOLVED_VERSION: ${{ steps.drafter.outputs.resolved_version }}
+          RELEASABLE: ${{ steps.gate.outputs.releasable }}
         run: |
           set -euo pipefail
 
@@ -100,6 +109,14 @@ jobs:
             echo "pyproject.toml version ($current) already differs from the latest tag ($latest_version): respecting the manual bump."
             final="$current"
             bumped=false
+          elif [ "${RELEASABLE:-}" = "false" ]; then
+            echo "Only chore/ci/docs/test pull requests since $latest_tag: nothing to release (Velisa ADR-023)."
+            {
+              echo "final="
+              echo "bumped=false"
+              echo "skip=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
           else
             final="${RESOLVED_VERSION#v}"
             bumped=true
@@ -208,6 +225,14 @@ jobs:
             git commit -q -m "chore(release): v$FINAL_VERSION [skip release]"
           fi
           git tag "v$FINAL_VERSION"
+
+      # The release commit is pushed with GITHUB_TOKEN, so no workflow runs on it on main: test it here, before
+      # it is pushed. A failure stops the release; main and the tags stay as they were (Velisa ADR-023).
+      - name: Test the release commit before pushing it
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          python3 -m pip install -q -e . pytest
+          python3 -m pytest -q tests/test_contract.py tests/test_contract_file.py tests/test_release_labels.py tests/test_release_gate.py -k "not doctor"   # doctor depends on FFmpeg being installed
 
       - name: Push commit and tag
         if: steps.version.outputs.skip != 'true'
