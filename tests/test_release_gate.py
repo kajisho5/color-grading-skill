@@ -7,6 +7,8 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATE = os.path.join(ROOT, ".github", "scripts", "release_gate.py")
+# Where release.yml makes the release commit (the test step must come after it and before every push).
+COMMIT_MARKER = "git commit "
 MAINTENANCE = {"chore", "ci", "docs", "documentation", "test", "tests", "maintenance", "refactor", "style", "build"}
 
 
@@ -53,7 +55,7 @@ class ReleaseWorkflowOrderTests(unittest.TestCase):
         text = _read(".github", "workflows", "release.yml")
         self.assertIn("python3 .github/scripts/release_gate.py", text)
         test_step = text.index("- name: Test the release commit before pushing it")
-        self.assertLess(text.index("git commit "), test_step)
+        self.assertLess(text.index(COMMIT_MARKER), test_step)
         pushes = [m.start() for m in re.finditer(r"git push", text)]
         self.assertTrue(pushes)
         for push in pushes:
