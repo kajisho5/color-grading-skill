@@ -1,3 +1,7 @@
+## v1.1.2 - 2026-11-19
+
+- ci: call Velisa's contract-diff on contract changes, one run per pull request (#44) (eee4be8)
+
 ## v1.1.1 - 2026-11-19
 
 - ci: commit the contract as contract/contract.json (#43) (048a85d)
