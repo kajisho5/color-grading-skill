@@ -703,3 +703,9 @@
   - *For a caller.* A request without the new fields runs as in 1.0.1, with the warning when an alpha source's mode is
     assumed; a premultiplied source has to be stated to be refused (unstated, it is still graded as straight, with the
     warning). A minor release (1.1.0).
+
+- **ADR-34 The release job tests its commit before pushing it; chore / ci / docs / test pull requests release nothing (Velisa ADR-023, D37).**
+  - The release commit is pushed with the default token, so no workflow runs on it on main. On 2026-11-19 two skills' mains broke this way (sound-design-skill, hyperframes-skill). Also, every merged pull request released a patch, `ci:` changes included.
+  - The release job now commits and tags locally, runs `tests/test_contract.py`, `tests/test_contract_file.py`, `tests/test_release_labels.py` and `tests/test_release_gate.py` (without the doctor tests, which depend on FFmpeg) on that commit, and only then pushes. A failure pushes nothing.
+  - `.github/scripts/release_gate.py` lets a push release only when a pull request merged since the latest tag carries a release-level label or no label at all. The release-level labels are the ones `.github/release-drafter.yml`'s `version-resolver` maps to a bump. A pull request labelled only chore, ci, documentation, docs, test or similar releases nothing. This is imagemagick-skill's rule. release-drafter's `default` accepts only major, minor or patch, so the gate runs first, and the maintenance labels no longer map to a patch.
+  - A version bumped by hand in a pull request is released whatever its labels. The contract is unchanged.
