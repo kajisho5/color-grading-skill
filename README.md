@@ -233,6 +233,11 @@ color-grading skill --json      # color-grading/contract@1: operations, paramete
 color-grading doctor --json     # color-grading/doctor@1: environment vs. contract, per-capability status
 ```
 
+`contract/contract.json` is the same contract committed as a file (byte for byte the `color-grading contract --json` output),
+so any release's contract is `git show vX.Y.Z:contract/contract.json`, with nothing installed or run. Regenerate it
+with `python contract/generate.py` after a contract change: a test fails when it is stale, and the release workflow
+regenerates it after the version bump.
+
 The contract states stable identifiers (`skill_id`, `operations[].type`, `operations[].parameters`,
 `operation_aliases`, `unsupported_operations`, `output_formats`, `errors.codes`), all derived from the tables the code
 runs on — there are no placeholder operations. For the AI Video Production OS registry it also carries

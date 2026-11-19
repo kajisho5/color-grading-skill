@@ -1,0 +1,1491 @@
+{
+  "schema": "color-grading/contract@1",
+  "skill_id": "color-grading",
+  "id": "color-grading",
+  "name": "color-grading-skill",
+  "package": "color-grading-skill",
+  "version": "1.1.0",
+  "contract_version": 1,
+  "kind": "execution",
+  "role": "colour grading / colour correction execution (processing); not decision, not measurement, not automatic look/LUT selection",
+  "description": "Deterministic colour grading execution: HDR-to-SDR tone mapping, 3D .cube LUT application, colour-tag retagging, Dolby Vision RPU removal, typed primary colour correction (exposure/contrast/saturation/white balance/gamma/lift/gain/levels/curves) and OpenColorIO / ACES colour-space transforms (baked to a 3D LUT by the optional PyOpenColorIO, applied through ffmpeg-skill), executed as a typed operation graph through ffmpeg-skill's public contract, with output validation and provenance. Not an AI agent: it never decides which colour treatment, LUT or look to apply, nor which correction values to use.",
+  "repository": "https://github.com/kajisho5/color-grading-skill",
+  "not_provided": [
+    "AI reasoning",
+    "decisions",
+    "production plans",
+    "automatic colour grading",
+    "automatic look selection",
+    "automatic LUT selection",
+    "image understanding",
+    "scene/face detection",
+    "automatic shot matching (MATCH_CAMERA fits camera B to a reference frame and time the caller names)",
+    "automatic white balance (WHITE_BALANCE takes explicit temperature and tint values)",
+    "container/format conversion (ffmpeg-skill/export)",
+    "arbitrary ffmpeg filters",
+    "shell execution",
+    "network access"
+  ],
+  "tools": [
+    {
+      "tool_id": "color-grading/run",
+      "skill_id": "color-grading",
+      "version": "1.1.0",
+      "role": "execution",
+      "description": "Execute a typed ColorProject (operation graph) and write validated video artifacts with provenance",
+      "inputs": [
+        "request document (stdin)"
+      ],
+      "input_type": "color-grading/request@1",
+      "produces_output": true,
+      "writes_media": true,
+      "deterministic": true,
+      "idempotency_hint": "content_equivalent; intermediates reused by deterministic operation id",
+      "operations": [
+        "HDR_TO_SDR",
+        "LEGALIZE",
+        "LUT_APPLY",
+        "MATCH_CAMERA",
+        "OCIO_TRANSFORM",
+        "PRIMARY_CORRECTION",
+        "RETAG",
+        "STRIP_DOVI"
+      ],
+      "supports": {
+        "dry_run": true,
+        "timeout": true,
+        "cancel": true,
+        "validate": true
+      },
+      "verification": "every artifact is probed (video stream, duration, resolution, colour tags measured and checked against the requested operation, sha256); HDR_TO_SDR checks the output is no longer tagged HDR, RETAG checks the exact tag triple, STRIP_DOVI checks the Dolby Vision side data is gone",
+      "provenance": "OBSERVED",
+      "mutates_input": false,
+      "delegates_to": [
+        "ffmpeg-skill/probe",
+        "ffmpeg-skill/color",
+        "ffmpeg-skill/look",
+        "ffmpeg-skill/check"
+      ]
+    }
+  ],
+  "provides": [
+    {
+      "id": "color.hdr_to_sdr",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "color-grading/run",
+      "operation": "HDR_TO_SDR"
+    },
+    {
+      "id": "color.legalize",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "color-grading/run",
+      "operation": "LEGALIZE"
+    },
+    {
+      "id": "color.lut_apply",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "color-grading/run",
+      "operation": "LUT_APPLY"
+    },
+    {
+      "id": "color.match_camera",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "color-grading/run",
+      "operation": "MATCH_CAMERA"
+    },
+    {
+      "id": "color.ocio_transform",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "color-grading/run",
+      "operation": "OCIO_TRANSFORM"
+    },
+    {
+      "id": "color.primary_correction",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "color-grading/run",
+      "operation": "PRIMARY_CORRECTION"
+    },
+    {
+      "id": "color.retag",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "color-grading/run",
+      "operation": "RETAG"
+    },
+    {
+      "id": "color.strip_dovi",
+      "lifecycle": "EXPERIMENTAL",
+      "tool_id": "color-grading/run",
+      "operation": "STRIP_DOVI"
+    }
+  ],
+  "dependencies": [
+    {
+      "skill_id": "ffmpeg-skill",
+      "version_range": ">=1.0 <3.0",
+      "range_of": "contract_version",
+      "required": true,
+      "tools": [
+        "ffmpeg-skill/probe",
+        "ffmpeg-skill/color"
+      ],
+      "optional_tools": [
+        "ffmpeg-skill/look",
+        "ffmpeg-skill/check"
+      ]
+    }
+  ],
+  "optional_dependencies": [
+    {
+      "extra": "ocio",
+      "module": "PyOpenColorIO",
+      "package": "opencolorio",
+      "licence": "BSD-3-Clause",
+      "capability": "python:PyOpenColorIO",
+      "install": "pip install 'color-grading-skill[ocio]'  (PyOpenColorIO, BSD-3-Clause)",
+      "needed_by": [
+        "OCIO_TRANSFORM"
+      ]
+    }
+  ],
+  "operations": [
+    {
+      "type": "HDR_TO_SDR",
+      "description": "Tone-map HDR (PQ/HLG, BT.2020) to SDR BT.709 (ffmpeg-skill/color --to-sdr)",
+      "inputs": 1,
+      "parameters": {
+        "tonemap": {
+          "type": "string",
+          "required": false,
+          "enum": [
+            "hable",
+            "mobius",
+            "reinhard",
+            "bt2390",
+            "clip",
+            "linear",
+            "gamma"
+          ],
+          "default": null,
+          "description": "tone-mapping curve; when omitted (None), chosen by the input's transfer: mobius for HLG (arib-std-b67), hable for PQ (smpte2084) and anything else; the choice and its rule are recorded as tonemap_selection in results and provenance"
+        },
+        "peak_nits": {
+          "type": "number",
+          "required": false,
+          "min": 1.0,
+          "max": 10000.0,
+          "default": 1000.0,
+          "description": "source peak brightness in nits, used for PQ"
+        },
+        "desat": {
+          "type": "number",
+          "required": false,
+          "min": 0.0,
+          "max": 5.0,
+          "default": 0.0,
+          "description": "tonemap desaturation strength"
+        },
+        "force": {
+          "type": "boolean",
+          "required": false,
+          "default": false,
+          "description": "tone-map even if the source is not tagged HDR (treat as PQ)"
+        },
+        "crf": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 51,
+          "default": 18,
+          "description": "x264 constant rate factor (0=lossless, 51=worst); lower is higher quality / larger file"
+        },
+        "preset": {
+          "type": "string",
+          "required": false,
+          "enum": [
+            "ultrafast",
+            "superfast",
+            "veryfast",
+            "faster",
+            "fast",
+            "medium",
+            "slow",
+            "slower",
+            "veryslow",
+            "placebo"
+          ],
+          "default": "medium",
+          "description": "x264 encoding speed/efficiency preset"
+        },
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "which audio stream of the input to keep, 0-based in file order; matters on a multi-track input (dubbed languages, M&E stems) -- only affects paths that re-encode audio"
+        }
+      },
+      "tool": "ffmpeg-skill/color",
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "filter:zscale",
+        "filter:tonemap",
+        "encoder:libx264"
+      ],
+      "changes_duration": false,
+      "changes_resolution": false,
+      "deterministic": "content_equivalent"
+    },
+    {
+      "type": "LUT_APPLY",
+      "description": "Apply a 3D .cube LUT (ffmpeg-skill/color --lut); LUT is data, resolved and hashed by this skill, never a filter string",
+      "inputs": 1,
+      "parameters": {
+        "lut_path": {
+          "type": "string",
+          "required": true,
+          "description": "path to a .cube LUT file, resolved through the LUT PathPolicy"
+        },
+        "lut_strength": {
+          "type": "number",
+          "required": false,
+          "min": 0.0,
+          "max": 1.0,
+          "default": 1.0,
+          "description": "blend of the LUT result with the original, 0..1 (ffmpeg-skill applies the LUT at full strength for both 0.0 and 1.0; only a value strictly between them blends, see docs/ffmpeg-skill.md)"
+        },
+        "crf": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 51,
+          "default": 18,
+          "description": "x264 constant rate factor (0=lossless, 51=worst); lower is higher quality / larger file"
+        },
+        "preset": {
+          "type": "string",
+          "required": false,
+          "enum": [
+            "ultrafast",
+            "superfast",
+            "veryfast",
+            "faster",
+            "fast",
+            "medium",
+            "slow",
+            "slower",
+            "veryslow",
+            "placebo"
+          ],
+          "default": "medium",
+          "description": "x264 encoding speed/efficiency preset"
+        },
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "which audio stream of the input to keep, 0-based in file order; matters on a multi-track input (dubbed languages, M&E stems) -- only affects paths that re-encode audio"
+        }
+      },
+      "tool": "ffmpeg-skill/color",
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "filter:lut3d",
+        "encoder:libx264"
+      ],
+      "changes_duration": false,
+      "changes_resolution": false,
+      "deterministic": "content_equivalent"
+    },
+    {
+      "type": "RETAG",
+      "description": "Rewrite colour tags only, no re-encode when the container allows it (ffmpeg-skill/color --retag)",
+      "inputs": 1,
+      "parameters": {
+        "target": {
+          "type": "string",
+          "required": true,
+          "enum": [
+            "bt709",
+            "bt2020-pq",
+            "bt2020-hlg",
+            "bt601"
+          ],
+          "description": "colour tag set to write"
+        },
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "which audio stream of the input to keep, 0-based in file order; matters on a multi-track input (dubbed languages, M&E stems) -- only affects paths that re-encode audio"
+        }
+      },
+      "tool": "ffmpeg-skill/color",
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe"
+      ],
+      "changes_duration": false,
+      "changes_resolution": false,
+      "deterministic": "content_equivalent"
+    },
+    {
+      "type": "STRIP_DOVI",
+      "description": "Remove the Dolby Vision RPU (profile 8.4 clips), keeping the HLG/HDR10 base layer; stream copy (ffmpeg-skill/color --strip-dovi)",
+      "inputs": 1,
+      "parameters": {},
+      "tool": "ffmpeg-skill/color",
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "bsf:filter_units"
+      ],
+      "changes_duration": false,
+      "changes_resolution": false,
+      "deterministic": "content_equivalent"
+    },
+    {
+      "type": "PRIMARY_CORRECTION",
+      "description": "Typed primary colour correction: exposure, contrast, saturation, white balance (temperature + tint), gamma, three-way shadows/highlights (lift/gain), levels and a curves preset (ffmpeg-skill/color --correct, requires ffmpeg-skill >= 0.9.2 for the first five, >= 0.12.3 for the other eight); each parameter is one option of one real ffmpeg filter (exposure / eq / colortemperature / colorbalance / colorlevels / curves), range-checked by ffmpeg-skill itself -- never a filter string",
+      "inputs": 1,
+      "parameters": {
+        "exposure": {
+          "type": "number",
+          "required": false,
+          "min": -3.0,
+          "max": 3.0,
+          "default": 0.0,
+          "description": "exposure correction in stops; 0 is unchanged"
+        },
+        "contrast": {
+          "type": "number",
+          "required": false,
+          "min": 0.0,
+          "max": 2.0,
+          "default": 1.0,
+          "description": "contrast; 1 is unchanged, 0 is flat grey, 2 is double contrast"
+        },
+        "saturation": {
+          "type": "number",
+          "required": false,
+          "min": 0.0,
+          "max": 2.0,
+          "default": 1.0,
+          "description": "saturation; 1 is unchanged, 0 is grayscale, 2 is double saturation"
+        },
+        "temperature": {
+          "type": "number",
+          "required": false,
+          "min": 2000.0,
+          "max": 12000.0,
+          "default": 6500.0,
+          "description": "white-balance temperature in Kelvin; 6500 is unchanged"
+        },
+        "tint": {
+          "type": "number",
+          "required": false,
+          "min": -1.0,
+          "max": 1.0,
+          "default": 0.0,
+          "description": "green(-1)/magenta(+1) tint; 0 is unchanged"
+        },
+        "gamma": {
+          "type": "number",
+          "required": false,
+          "min": 0.1,
+          "max": 10.0,
+          "default": 1.0,
+          "description": "master gamma (eq filter's own gamma); 1 is unchanged"
+        },
+        "lift": {
+          "type": "number",
+          "required": false,
+          "min": -1.0,
+          "max": 1.0,
+          "default": 0.0,
+          "description": "shadows lift (colorbalance rs/gs/bs, three-way colour correction); 0 is unchanged"
+        },
+        "gain": {
+          "type": "number",
+          "required": false,
+          "min": -1.0,
+          "max": 1.0,
+          "default": 0.0,
+          "description": "highlights gain (colorbalance rh/gh/bh, three-way colour correction); 0 is unchanged"
+        },
+        "levels_in_black": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 255,
+          "default": 0,
+          "description": "colorlevels input black point, 0..255 (8-bit units); 0 is unchanged"
+        },
+        "levels_in_white": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 255,
+          "default": 255,
+          "description": "colorlevels input white point, 0..255 (8-bit units); 255 is unchanged"
+        },
+        "levels_out_black": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 255,
+          "default": 0,
+          "description": "colorlevels output black point, 0..255 (8-bit units); 0 is unchanged"
+        },
+        "levels_out_white": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 255,
+          "default": 255,
+          "description": "colorlevels output white point, 0..255 (8-bit units); 255 is unchanged"
+        },
+        "curves": {
+          "type": "string",
+          "required": false,
+          "enum": [
+            "color_negative",
+            "cross_process",
+            "darker",
+            "increase_contrast",
+            "lighter",
+            "linear_contrast",
+            "medium_contrast",
+            "negative",
+            "strong_contrast",
+            "vintage"
+          ],
+          "default": null,
+          "description": "curves filter built-in preset; None (default) adds no curves term"
+        },
+        "crf": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 51,
+          "default": 18,
+          "description": "x264 constant rate factor (0=lossless, 51=worst); lower is higher quality / larger file"
+        },
+        "preset": {
+          "type": "string",
+          "required": false,
+          "enum": [
+            "ultrafast",
+            "superfast",
+            "veryfast",
+            "faster",
+            "fast",
+            "medium",
+            "slow",
+            "slower",
+            "veryslow",
+            "placebo"
+          ],
+          "default": "medium",
+          "description": "x264 encoding speed/efficiency preset"
+        },
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "which audio stream of the input to keep, 0-based in file order; matters on a multi-track input (dubbed languages, M&E stems) -- only affects paths that re-encode audio"
+        }
+      },
+      "tool": "ffmpeg-skill/color",
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "filter:exposure",
+        "filter:eq",
+        "filter:colorbalance",
+        "filter:colortemperature",
+        "filter:colorlevels",
+        "filter:curves",
+        "encoder:libx264"
+      ],
+      "changes_duration": false,
+      "changes_resolution": false,
+      "deterministic": "content_equivalent"
+    },
+    {
+      "type": "OCIO_TRANSFORM",
+      "description": "Colour-space conversion named by an OpenColorIO config (the built-in ACES studio / CG configs or a .ocio file): source space -> destination space, or source space -> display / view, with an optional look. PyOpenColorIO (optional extra `ocio`) bakes it to a 3D .cube LUT of the stated size; ffmpeg-skill/color --lut applies it and --retag writes the destination's colour tags (docs/decisions.md ADR-22)",
+      "inputs": 1,
+      "parameters": {
+        "config": {
+          "type": "string",
+          "required": false,
+          "default": "ocio://studio-config-latest",
+          "description": "an OpenColorIO built-in config URI (ocio://studio-config-latest, ocio://cg-config-latest, or a versioned ocio://...-config-v... name) or the path of a .ocio file, resolved through the LUT PathPolicy"
+        },
+        "source_space": {
+          "type": "string",
+          "required": true,
+          "description": "colour space of the input pixels, as the config names it (e.g. 'S-Log3 S-Gamut3.Cine', 'ACEScct')"
+        },
+        "destination_space": {
+          "type": "string",
+          "required": false,
+          "default": null,
+          "description": "destination colour space; give this or display + view"
+        },
+        "display": {
+          "type": "string",
+          "required": false,
+          "default": null,
+          "description": "destination display (e.g. 'Rec.1886 Rec.709 - Display'); needs view"
+        },
+        "view": {
+          "type": "string",
+          "required": false,
+          "default": null,
+          "description": "view of the display (e.g. 'ACES 2.0 - SDR 100 nits (Rec.709)'); needs display"
+        },
+        "look": {
+          "type": "string",
+          "required": false,
+          "default": null,
+          "description": "an optional look of the config, applied before the destination"
+        },
+        "lut_size": {
+          "type": "integer",
+          "required": false,
+          "enum": [
+            17,
+            33,
+            65,
+            129
+          ],
+          "default": 65,
+          "description": "edge length of the baked 3D LUT; 129 is the size measured within 1/1023 of OpenColorIO's processor for the ACES display transforms on the test chart (ADR-22)"
+        },
+        "output_tags": {
+          "type": "string",
+          "required": false,
+          "enum": [
+            "bt709",
+            "bt2020-pq",
+            "bt2020-hlg",
+            "bt601"
+          ],
+          "default": null,
+          "description": "colour tags the output must carry; derived from a known destination (Rec.1886 Rec.709 -> bt709, Rec.2100-PQ -> bt2020-pq, Rec.2100-HLG -> bt2020-hlg), required for any other destination"
+        },
+        "crf": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 51,
+          "default": 18,
+          "description": "x264 constant rate factor (0=lossless, 51=worst); lower is higher quality / larger file"
+        },
+        "preset": {
+          "type": "string",
+          "required": false,
+          "enum": [
+            "ultrafast",
+            "superfast",
+            "veryfast",
+            "faster",
+            "fast",
+            "medium",
+            "slow",
+            "slower",
+            "veryslow",
+            "placebo"
+          ],
+          "default": "medium",
+          "description": "x264 encoding speed/efficiency preset"
+        },
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "which audio stream of the input to keep, 0-based in file order; matters on a multi-track input (dubbed languages, M&E stems) -- only affects paths that re-encode audio"
+        }
+      },
+      "tool": "ffmpeg-skill/color",
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "python:PyOpenColorIO",
+        "ffmpeg-skill/color:retag-h264-vui",
+        "filter:lut3d",
+        "encoder:libx264"
+      ],
+      "changes_duration": false,
+      "changes_resolution": false,
+      "deterministic": "content_equivalent"
+    },
+    {
+      "type": "LEGALIZE",
+      "description": "Soft-clip into broadcast-legal levels: BT.709 legal range (8-bit luma 16-235, chroma 16-240) or the EBU R 103 tolerance, as a 3D .cube LUT over float RGB (super-whites and sub-blacks included) applied by ffmpeg-skill/color --lut (docs/decisions.md ADR-24)",
+      "inputs": 1,
+      "parameters": {
+        "profile": {
+          "type": "string",
+          "required": false,
+          "enum": [
+            "bt709",
+            "ebu-r103"
+          ],
+          "default": "bt709",
+          "description": "bt709: RGB 0..1 (luma 16-235, chroma 16-240); ebu-r103: EBU R 103 tolerance (RGB -5..105 %, luma -1..103 %)"
+        },
+        "knee": {
+          "type": "number",
+          "required": false,
+          "min": 0.8,
+          "max": 0.99,
+          "default": 0.95,
+          "description": "where the highlight soft clip starts, as a fraction of the legal RGB span; values below it are unchanged"
+        },
+        "lut_size": {
+          "type": "integer",
+          "required": false,
+          "enum": [
+            33,
+            65
+          ],
+          "default": 65,
+          "description": "edge length of the written 3D LUT"
+        },
+        "crf": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 51,
+          "default": 18,
+          "description": "x264 constant rate factor (0=lossless, 51=worst); lower is higher quality / larger file"
+        },
+        "preset": {
+          "type": "string",
+          "required": false,
+          "enum": [
+            "ultrafast",
+            "superfast",
+            "veryfast",
+            "faster",
+            "fast",
+            "medium",
+            "slow",
+            "slower",
+            "veryslow",
+            "placebo"
+          ],
+          "default": "medium",
+          "description": "x264 encoding speed/efficiency preset"
+        },
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "which audio stream of the input to keep, 0-based in file order; matters on a multi-track input (dubbed languages, M&E stems) -- only affects paths that re-encode audio"
+        }
+      },
+      "tool": "ffmpeg-skill/color",
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "ffmpeg-skill/color:lut-bt709-legs",
+        "filter:lut3d",
+        "encoder:libx264"
+      ],
+      "changes_duration": false,
+      "changes_resolution": false,
+      "deterministic": "content_equivalent"
+    },
+    {
+      "type": "MATCH_CAMERA",
+      "description": "Match this camera's colour to a reference camera from a frame pair of the same subject: frames extracted by ffmpeg-skill/look, a correction fitted (per-channel curves or a 3x3 matrix + offset), written as a 3D .cube LUT and applied by ffmpeg-skill/color --lut; the residual CIEDE2000 against the reference is measured before and after (docs/decisions.md ADR-23)",
+      "inputs": 1,
+      "parameters": {
+        "reference_path": {
+          "type": "string",
+          "required": true,
+          "description": "the reference camera's video (camera A), resolved through the input PathPolicy"
+        },
+        "reference_at": {
+          "type": "number",
+          "required": false,
+          "min": 0.0,
+          "max": 86400.0,
+          "default": 0.0,
+          "description": "time of the reference frame in the reference video, seconds"
+        },
+        "at": {
+          "type": "number",
+          "required": false,
+          "min": 0.0,
+          "max": 86400.0,
+          "default": 0.0,
+          "description": "time of the matching frame in this operation's input, seconds"
+        },
+        "model": {
+          "type": "string",
+          "required": false,
+          "enum": [
+            "curves",
+            "matrix"
+          ],
+          "default": "curves",
+          "description": "curves: one monotone curve per channel; matrix: 3x3 matrix + offset (corrects cross-channel differences too)"
+        },
+        "patches": {
+          "type": "string",
+          "required": false,
+          "default": null,
+          "description": "up to 64 stated patches, ';'-separated, each 'x,y,w,h' (the same rectangle in both frames) or 'x,y,w,h/x,y,w,h' (reference / input), fractions of the frame; omitted: the whole frame, which needs the same framing",
+          "format": "x,y,w,h[/x,y,w,h](;...)"
+        },
+        "lut_size": {
+          "type": "integer",
+          "required": false,
+          "enum": [
+            17,
+            33,
+            65
+          ],
+          "default": 33,
+          "description": "edge length of the written 3D LUT"
+        },
+        "crf": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "max": 51,
+          "default": 18,
+          "description": "x264 constant rate factor (0=lossless, 51=worst); lower is higher quality / larger file"
+        },
+        "preset": {
+          "type": "string",
+          "required": false,
+          "enum": [
+            "ultrafast",
+            "superfast",
+            "veryfast",
+            "faster",
+            "fast",
+            "medium",
+            "slow",
+            "slower",
+            "veryslow",
+            "placebo"
+          ],
+          "default": "medium",
+          "description": "x264 encoding speed/efficiency preset"
+        },
+        "audio_stream": {
+          "type": "integer",
+          "required": false,
+          "min": 0,
+          "default": 0,
+          "description": "which audio stream of the input to keep, 0-based in file order; matters on a multi-track input (dubbed languages, M&E stems) -- only affects paths that re-encode audio"
+        }
+      },
+      "tool": "ffmpeg-skill/color",
+      "required_capabilities": [
+        "ffmpeg-skill",
+        "ffmpeg",
+        "ffprobe",
+        "ffmpeg-skill/look",
+        "ffmpeg-skill/color:lut-bt709-legs",
+        "filter:lut3d",
+        "encoder:libx264"
+      ],
+      "changes_duration": false,
+      "changes_resolution": false,
+      "deterministic": "content_equivalent"
+    }
+  ],
+  "operation_aliases": [
+    {
+      "type": "WHITE_BALANCE",
+      "alias_of": "PRIMARY_CORRECTION",
+      "parameters": [
+        "temperature",
+        "tint",
+        "crf",
+        "preset",
+        "audio_stream"
+      ],
+      "description": "white balance only: PRIMARY_CORRECTION's temperature (Kelvin) and tint, every other correction parameter left at its identity default (ffmpeg-skill/color --correct --temperature --tint)",
+      "resolved_at": "validation; plan, identity, results and provenance name the target operation type"
+    }
+  ],
+  "unsupported_operations": [],
+  "output_formats": {
+    "mp4": {
+      "extension": ".mp4",
+      "note": "must match the source container; this skill does not convert containers"
+    },
+    "mov": {
+      "extension": ".mov",
+      "note": "must match the source container; this skill does not convert containers"
+    },
+    "m4v": {
+      "extension": ".m4v",
+      "note": "must match the source container; this skill does not convert containers"
+    },
+    "mkv": {
+      "extension": ".mkv",
+      "note": "must match the source container; this skill does not convert containers"
+    }
+  },
+  "lut": {
+    "format": "cube",
+    "extensions": [
+      ".cube"
+    ],
+    "max_bytes": 209715200,
+    "hashed": "sha256, recorded in provenance",
+    "strength_range": [
+      0.0,
+      1.0
+    ],
+    "note": "a LUT is data read by ffmpeg's lut3d filter, never a filter string or executable; path policy applies (allowed_lut_roots)"
+  },
+  "ocio": {
+    "operation": "OCIO_TRANSFORM",
+    "builtin_prefix": "ocio://",
+    "default_config": "ocio://studio-config-latest",
+    "config_extensions": [
+      ".ocio"
+    ],
+    "lut_sizes": [
+      17,
+      33,
+      65,
+      129
+    ],
+    "default_lut_size": 65,
+    "known_destination_tags": {
+      "Rec.1886 Rec.709 - Display": "bt709",
+      "Rec.2100-PQ - Display": "bt2020-pq",
+      "Rec.2100-HLG - Display": "bt2020-hlg",
+      "Gamma 2.4 Encoded Rec.709": "bt709",
+      "Camera Rec.709": "bt709"
+    },
+    "execution": "PyOpenColorIO evaluates the transform on the cube's nodes only (no media); ffmpeg-skill/color --lut applies the cube, --retag writes the destination's tags when --lut's BT.709 tags are not them",
+    "provenance": [
+      "config (name, profile_version, resolved built-in or file sha256, serialized sha256)",
+      "transform (source, destination or display/view, look)",
+      "lut_size",
+      "lut_sha256",
+      "clamped_values",
+      "accuracy (max/mean error against OpenColorIO's CPU processor on a test chart, 1/1023 units)"
+    ],
+    "test_chart": "colorchecker24 x 5 exposures + grey ramp (-10..+8 stops), scene-linear Rec.709 encoded into the source space"
+  },
+  "color_space": {
+    "measured_fields": [
+      "color_space",
+      "color_primaries",
+      "color_transfer",
+      "color_range",
+      "pix_fmt",
+      "hdr",
+      "dolby_vision"
+    ],
+    "source": "ffmpeg-skill/probe (ffprobe); OBSERVED, never inferred",
+    "retag_targets": [
+      "bt709",
+      "bt2020-pq",
+      "bt2020-hlg",
+      "bt601"
+    ],
+    "retag_tags": {
+      "bt709": [
+        "bt709",
+        "bt709",
+        "bt709"
+      ],
+      "bt2020-pq": [
+        "bt2020nc",
+        "bt2020",
+        "smpte2084"
+      ],
+      "bt2020-hlg": [
+        "bt2020nc",
+        "bt2020",
+        "arib-std-b67"
+      ],
+      "bt601": [
+        "smpte170m",
+        "smpte170m",
+        "smpte170m"
+      ]
+    },
+    "note": "measurement of input/output colour information is kept separate from the RETAG / HDR_TO_SDR operations that change it (STEP 4 of the design brief)"
+  },
+  "hdr_sdr": {
+    "tonemap_curves": [
+      "hable",
+      "mobius",
+      "reinhard",
+      "bt2390",
+      "clip",
+      "linear",
+      "gamma"
+    ],
+    "peak_nits_range": [
+      1.0,
+      10000.0
+    ],
+    "desat_range": [
+      0.0,
+      5.0
+    ],
+    "tone_mapping_selection": "an explicit typed parameter (tonemap curve, peak, desat) from the caller always wins; when the request gives no tonemap, a fixed rule on the input's measured transfer picks it (hdr_sdr_defaults): mobius for HLG (arib-std-b67), hable for PQ and any other or unknown transfer; never chosen from the picture",
+    "hdr_detection": "measured via ffmpeg-skill/probe (bt2020_or_hdr, or hdr before 2.0: color_transfer/color_primaries); HDR_TO_SDR refuses a non-HDR source unless force is set"
+  },
+  "hdr_sdr_defaults": {
+    "tonemap": {
+      "when": "the request gives no tonemap",
+      "by_input_transfer": {
+        "arib-std-b67": "mobius"
+      },
+      "otherwise": "hable",
+      "explicit_wins": true,
+      "rules": {
+        "request": "the request named the curve (always wins)",
+        "hlg_default": "no curve in the request and the input transfer is HLG (arib-std-b67): mobius",
+        "default": "no curve in the request and the input transfer is not HLG (PQ smpte2084 or anything else): hable"
+      },
+      "input_transfer": "the source's measured color_transfer, through STRIP_DOVI, or the transfer a RETAG writes; after any other operation it is not known up front (null) and the otherwise curve applies",
+      "recorded_as": "tonemap_selection {tonemap, rule, input_transfer} in plan steps, results and provenance; parameters.tonemap holds the curve that ran"
+    }
+  },
+  "alpha": {
+    "preserved_by": [
+      "RETAG",
+      "STRIP_DOVI"
+    ],
+    "refused_for": [
+      "HDR_TO_SDR",
+      "LUT_APPLY",
+      "PRIMARY_CORRECTION",
+      "OCIO_TRANSFORM",
+      "MATCH_CAMERA",
+      "LEGALIZE"
+    ],
+    "pix_fmt_pattern": "^(yuva|gbrap|ya(8|16)|rgba|bgra|argb|abgr)",
+    "policy": "a source with an alpha plane is refused (UNSUPPORTED_FORMAT, reason alpha_not_preserved) for every operation that re-encodes through ffmpeg-skill/color without keeping the alpha; a stream copy keeps it and an output without it fails validation (alpha_lost). Where ffmpeg-skill/color has --keep-alpha, LUT_APPLY and PRIMARY_CORRECTION grade with the alpha kept (keep_alpha; docs/decisions.md ADR-25, ADR-30). The request says how the colour is stored (alpha_mode) and whether an opaque result is wanted instead (drop_alpha); a premultiplied source is refused for a grade that keeps the alpha (ADR-33)",
+    "keep_alpha": {
+      "operations": [
+        "LUT_APPLY",
+        "PRIMARY_CORRECTION"
+      ],
+      "requires": "ffmpeg-skill/color:keep-alpha (--keep-alpha, --alpha-codec, --alpha-mode)",
+      "refused_for_with_keep_alpha": [
+        "HDR_TO_SDR",
+        "OCIO_TRANSFORM",
+        "MATCH_CAMERA",
+        "LEGALIZE"
+      ],
+      "alpha_codec_by_input_codec": {
+        "prores": "prores4444",
+        "qtrle": "qtrle",
+        "png": "png",
+        "vp9": "vp9"
+      },
+      "alpha_codec_default": "prores4444",
+      "containers": {
+        "prores4444": [
+          ".mov",
+          ".mkv"
+        ],
+        "qtrle": [
+          ".mov"
+        ],
+        "png": [
+          ".mov",
+          ".mkv"
+        ],
+        "vp9": [
+          ".mkv"
+        ]
+      },
+      "alpha_mode": "straight",
+      "encoders": {
+        "prores4444": "prores_ks",
+        "qtrle": "qtrle",
+        "png": "png",
+        "vp9": "libvpx-vp9"
+      },
+      "precision_bits": 8,
+      "precision": "ffmpeg-skill/color keeps the alpha at 8 bits: a deeper source alpha comes back within one 8-bit code (a warning says so); an 8-bit alpha is bit-identical",
+      "not_detected": "a VP9 stream with an alpha layer probes as yuv420p through ffmpeg-skill/probe: it is graded without --keep-alpha and color's failed alpha step makes it a VALIDATION_ERROR (alpha_lost)",
+      "premultiplied_source": "refused (UNSUPPORTED_FORMAT, reason alpha_premultiplied): ffmpeg-skill/color --keep-alpha grades the colour as stored and has no un-premultiply step (alpha_mode, ADR-33)",
+      "verification": "ffmpeg-skill/color's alpha step (written alpha against the source's, every frame) must pass, else VALIDATION_ERROR (alpha_lost / alpha_mismatch / alpha_unverified); the output must store an alpha plane",
+      "output": "the alpha line's pixel format (e.g. yuva444p12le for ProRes 4444) with the source's colour tags, not yuv420p",
+      "recorded_as": "alpha {kept, precision_bits, alpha_codec, alpha_mode, source_colour, tool, verification, alpha_mode_selection} in results and provenance"
+    },
+    "alpha_mode": {
+      "request_field": "project.source.alpha_mode",
+      "values": [
+        "straight",
+        "premultiplied"
+      ],
+      "default": null,
+      "when_omitted": {
+        "by_codec": {
+          "png": "straight"
+        },
+        "otherwise": "straight",
+        "warning": true
+      },
+      "rules": {
+        "request": "the request named it (project.source.alpha_mode, always wins)",
+        "format": "not in the request; the source's format fixes it (PNG stores straight, unassociated alpha)",
+        "assumed": "not in the request and the source's format does not state it: taken as straight, with a warning"
+      },
+      "detection": "an alpha plane is read from ffprobe's pix_fmt through ffmpeg-skill/probe (pix_fmt_pattern); no format field that probe reports says whether the colour is premultiplied, so only a format whose specification fixes it (PNG: straight) gives a default",
+      "straight": "LUT_APPLY / PRIMARY_CORRECTION grade the colour with the alpha kept (keep_alpha)",
+      "premultiplied": "refused for LUT_APPLY / PRIMARY_CORRECTION while the alpha is kept (alpha_premultiplied); RETAG / STRIP_DOVI copy it unchanged; drop_alpha flattens it",
+      "recorded_as": "alpha_mode_selection {alpha_mode, rule, format_states, codec} in plan.alpha, plan steps, and the alpha record of results and provenance"
+    },
+    "drop_alpha": {
+      "request_field": "project.source.drop_alpha",
+      "type": "boolean",
+      "default": false,
+      "effect": "every re-encoding operation on an alpha input writes the opaque H.264 line on purpose (none is refused for the alpha); RETAG / STRIP_DOVI still copy the stream and must keep the alpha",
+      "verification": "the written file must store no alpha plane (alpha_not_dropped); color's alpha step may report alpha_dropped, any other failure is a VALIDATION_ERROR",
+      "colour": "kept as stored: a premultiplied source reads as composited over black, a straight one shows the colour its transparent pixels hold",
+      "uses": "ffmpeg-skill/color --drop-alpha where detected (ffmpeg-skill/color:drop-alpha); without it the same opaque line is written and color's alpha step reporting alpha_dropped is expected",
+      "recorded_as": "alpha {kept: false, dropped: true, requested_by, tool, reported_dropped, verification, alpha_mode_selection}"
+    },
+    "output_settings": "an output that keeps the alpha with an expect.pix_fmt that has no alpha plane is refused before anything runs (alpha_not_preserved); the alpha line must fit the source's container (containers)"
+  },
+  "legalize": {
+    "clamp": {
+      "requires": "ffmpeg-skill/color:legalize",
+      "how": "color --lut <soft clip> --legalize <profile>: one encode, clamped after the 4:2:0 conversion",
+      "verification": "ffmpeg-skill/color's legal_levels step must pass (at most 1 % of one frame's luma or chroma samples out), else VALIDATION_ERROR legal_levels_failed",
+      "identity": "the clamp's profile (or null without it) is part of the operation identity"
+    },
+    "out_of_range_share": {
+      "requires": "ffmpeg-skill/check:levels",
+      "measured_on": [
+        "the operation's input (before)",
+        "the written file (after)"
+      ],
+      "keys": [
+        "frames",
+        "bit_depth",
+        "legal",
+        "out_of_range_pct",
+        "brng_pct",
+        "worst_frame",
+        "min",
+        "max",
+        "window_seconds",
+        "windows"
+      ],
+      "not_measured": "{measured: false, reason} on a checkout without check --levels, or when a file cannot be measured (an RGB picture)"
+    }
+  },
+  "optional_capabilities": [
+    "ffmpeg-skill/check:levels",
+    "ffmpeg-skill/color:legalize",
+    "ffmpeg-skill/color:keep-alpha",
+    "ffmpeg-skill/color:drop-alpha"
+  ],
+  "x264": {
+    "crf_range": [
+      0,
+      51
+    ],
+    "presets": [
+      "ultrafast",
+      "superfast",
+      "veryfast",
+      "faster",
+      "fast",
+      "medium",
+      "slow",
+      "slower",
+      "veryslow",
+      "placebo"
+    ]
+  },
+  "geometry": {
+    "changes": "no implemented operation changes duration or frame geometry",
+    "duration_tolerance": 0.2,
+    "work_dir": "<workspace>/.color-grading/<project_id>/"
+  },
+  "execution": {
+    "mode": "local",
+    "canonical_invocation": [
+      "color-grading",
+      "run",
+      "-",
+      "--json"
+    ],
+    "stdin": "color-grading/request@1",
+    "stdout": "exactly one color-grading/response@1 document",
+    "stderr": "diagnostics only",
+    "executables": [
+      "python3 <ffmpeg-skill>/scripts/{probe,color}.py (argv lists)"
+    ],
+    "executable_resolution": "ffmpeg-skill directory: --ffmpeg-skill, COLOR_GRADING_FFMPEG_SKILL_DIR, VIDEO_AGENT_FFMPEG_SKILL_DIR, ~/.claude/skills/ffmpeg-skill, ./vendor/ffmpeg-skill, ../ffmpeg-skill; ffmpeg/ffprobe: PATH lookup by ffmpeg-skill",
+    "shell": false,
+    "arbitrary_executables": false,
+    "arbitrary_filters": false,
+    "network": false,
+    "input_mutation": false,
+    "ai": false
+  },
+  "ffmpeg_skill": {
+    "contract_version": "1.0",
+    "contract_versions_known": [
+      "1.0",
+      "2.0"
+    ],
+    "version_window": null,
+    "compatibility": "capability detection, no version window: a checkout of any version is used when every required flag is present in its contract (or --help); doctor reports what was detected (docs/decisions.md ADR-19)",
+    "tools_used": [
+      "probe",
+      "color",
+      "look",
+      "check"
+    ],
+    "flags_used": {
+      "probe": [
+        "inputs"
+      ],
+      "color": [
+        "input",
+        "output",
+        "to_sdr",
+        "lut",
+        "retag",
+        "strip_dovi",
+        "correct",
+        "tonemap",
+        "peak",
+        "desat",
+        "lut_strength",
+        "force",
+        "exposure",
+        "contrast",
+        "saturation",
+        "temperature",
+        "tint",
+        "gamma",
+        "lift",
+        "gain",
+        "levels_in_black",
+        "levels_in_white",
+        "levels_out_black",
+        "levels_out_white",
+        "curves",
+        "audio_stream",
+        "preset",
+        "json",
+        "quality",
+        "crf",
+        "legalize",
+        "keep_alpha",
+        "alpha_codec",
+        "alpha_mode",
+        "drop_alpha"
+      ],
+      "look": [
+        "input",
+        "output",
+        "at",
+        "width",
+        "no_timecode",
+        "json"
+      ],
+      "check": [
+        "input",
+        "platform",
+        "no_loudness",
+        "levels",
+        "levels_window",
+        "levels_tolerance",
+        "json"
+      ]
+    },
+    "required_flags": {
+      "probe": [
+        "inputs"
+      ],
+      "color": [
+        "input",
+        "output",
+        "to_sdr",
+        "lut",
+        "retag",
+        "strip_dovi",
+        "correct",
+        "tonemap",
+        "peak",
+        "desat",
+        "lut_strength",
+        "force",
+        "exposure",
+        "contrast",
+        "saturation",
+        "temperature",
+        "tint",
+        "gamma",
+        "lift",
+        "gain",
+        "levels_in_black",
+        "levels_in_white",
+        "levels_out_black",
+        "levels_out_white",
+        "curves",
+        "audio_stream",
+        "preset",
+        "json"
+      ]
+    },
+    "flag_alternatives": {
+      "color": {
+        "encoder_quality": [
+          "quality",
+          "crf"
+        ]
+      }
+    },
+    "optional_flags": {
+      "color": {
+        "color_legalize": [
+          "legalize"
+        ],
+        "color_keep_alpha": [
+          "keep_alpha",
+          "alpha_codec",
+          "alpha_mode"
+        ],
+        "color_drop_alpha": [
+          "drop_alpha"
+        ]
+      }
+    },
+    "probe_hdr_key": "bt2020_or_hdr when present (ffmpeg-skill >= 2.0), else hdr: BT.2020 primaries or a PQ/HLG transfer either way"
+  },
+  "request": {
+    "schema": "color-grading/request@1",
+    "id_pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+    "reference_pattern": "^(source|op:([A-Za-z0-9][A-Za-z0-9._-]{0,63}))$",
+    "forbidden_fields": [
+      "af",
+      "api_key",
+      "args",
+      "argv",
+      "cmd",
+      "command",
+      "commands",
+      "cwd",
+      "env",
+      "exec",
+      "executable",
+      "ffmpeg",
+      "filter",
+      "filter_complex",
+      "filters",
+      "script",
+      "shell",
+      "vf",
+      "workspace"
+    ],
+    "max_operations": 200,
+    "shape": {
+      "schema": "color-grading/request@1",
+      "project": {
+        "project_id": "id",
+        "source": {
+          "source_id": "id",
+          "path": "file"
+        },
+        "operations": [
+          {
+            "op_id": "id",
+            "type": "HDR_TO_SDR|LUT_APPLY|RETAG|STRIP_DOVI|PRIMARY_CORRECTION",
+            "input": "source|op:<id>",
+            "parameters": {}
+          }
+        ],
+        "outputs": [
+          {
+            "output_id": "id",
+            "operation": "source|op:<id>",
+            "path": "file",
+            "format": "mp4|mov|m4v|mkv",
+            "overwrite?": false,
+            "expect?": {
+              "width?": 1920,
+              "height?": 1080,
+              "duration?": 0,
+              "duration_tolerance?": 0.2,
+              "pix_fmt?": "yuv420p"
+            }
+          }
+        ]
+      },
+      "options?": {
+        "reuse_intermediates?": true,
+        "timeout?": 600
+      }
+    }
+  },
+  "response": {
+    "schema": "color-grading/response@1",
+    "success": {
+      "ok": true,
+      "status": "ok",
+      "dry_run": "bool",
+      "plan": "...",
+      "results": "[OperationResult]",
+      "outputs": "[output artifact + provenance]"
+    },
+    "failure": {
+      "ok": false,
+      "status": "error|cancelled",
+      "error": {
+        "code": "one of errors.codes",
+        "message": "str",
+        "retryable": "bool",
+        "details": {}
+      }
+    }
+  },
+  "provenance": {
+    "per_operation": [
+      "operation_id",
+      "type",
+      "tool",
+      "tool_versions",
+      "parameters",
+      "input_hash",
+      "output_hash",
+      "status",
+      "measurements",
+      "tool_commands_observed",
+      "lut (LUT_APPLY only)"
+    ],
+    "per_output": [
+      "skill",
+      "skill_version",
+      "tool_versions",
+      "output_hash",
+      "operations (chain)",
+      "source (sha256)"
+    ],
+    "identity": "sha256 over canonical JSON of {type, parameters, input identity, tool versions}; a LUT_APPLY identity uses the LUT's sha256, not its path; the source's identity is its file sha256; no timestamps, no UUIDs"
+  },
+  "provenance_extensions": {
+    "per_operation": [
+      "lut (also OCIO_TRANSFORM, MATCH_CAMERA)",
+      "ocio (OCIO_TRANSFORM)",
+      "retagged (OCIO_TRANSFORM)",
+      "reference (MATCH_CAMERA)",
+      "measurements.delta_e2000 / fit / frames (MATCH_CAMERA)",
+      "legalize (LEGALIZE: profile, limits, knee, lut_sha256, clamp {applied, tool, standard, verification, residual} or {applied: false, reason}, out_of_range_share {measured, tool, standard, unit, before, after} or {measured: false, reason})",
+      "alpha (LUT_APPLY / PRIMARY_CORRECTION on an alpha source: kept, alpha_codec, alpha_mode, verification, alpha_mode_selection; a re-encode under drop_alpha: kept false, dropped true, requested_by, tool, reported_dropped, verification)",
+      "tonemap_selection (HDR_TO_SDR: tonemap, rule request | hlg_default | default, input_transfer)"
+    ],
+    "identity": "OCIO_TRANSFORM: the config's serialized sha256 and the baked LUT's sha256; MATCH_CAMERA: the reference video's sha256; LEGALIZE: the LUT's sha256 and the clamp's profile (null without the clamp); a re-encode of an alpha input: alpha_handling {alpha_line, drop_alpha}"
+  },
+  "request_extensions": {
+    "project.source": {
+      "alpha_mode?": "straight|premultiplied",
+      "drop_alpha?": false
+    },
+    "note": "request.shape is the 0.4.0 shape consumers pin; these optional fields are accepted beside it (alpha)"
+  },
+  "request_types": {
+    "operation_types": [
+      "HDR_TO_SDR",
+      "LEGALIZE",
+      "LUT_APPLY",
+      "MATCH_CAMERA",
+      "OCIO_TRANSFORM",
+      "PRIMARY_CORRECTION",
+      "RETAG",
+      "STRIP_DOVI"
+    ],
+    "aliases": [
+      "WHITE_BALANCE"
+    ],
+    "note": "request.shape lists the 0.4.0 types as an example; every type above is accepted"
+  },
+  "schema_versions": {
+    "contract": "1",
+    "request": "1",
+    "response": "1",
+    "doctor": "1"
+  },
+  "errors": {
+    "codes": [
+      "INVALID_REQUEST",
+      "INVALID_INPUT",
+      "PATH_NOT_ALLOWED",
+      "UNSUPPORTED_OPERATION",
+      "UNSUPPORTED_FORMAT",
+      "INVALID_TIME_RANGE",
+      "DEPENDENCY_ERROR",
+      "MISSING_INPUT",
+      "OUTPUT_ERROR",
+      "VALIDATION_ERROR",
+      "TOOL_ERROR",
+      "CANCELLED",
+      "INTERNAL_ERROR"
+    ],
+    "exit_codes": {
+      "INVALID_REQUEST": 2,
+      "INVALID_INPUT": 3,
+      "PATH_NOT_ALLOWED": 4,
+      "UNSUPPORTED_OPERATION": 5,
+      "UNSUPPORTED_FORMAT": 6,
+      "INVALID_TIME_RANGE": 7,
+      "DEPENDENCY_ERROR": 8,
+      "MISSING_INPUT": 9,
+      "OUTPUT_ERROR": 10,
+      "VALIDATION_ERROR": 11,
+      "TOOL_ERROR": 12,
+      "CANCELLED": 13,
+      "INTERNAL_ERROR": 14
+    },
+    "retryable": {
+      "INVALID_REQUEST": false,
+      "INVALID_INPUT": false,
+      "PATH_NOT_ALLOWED": false,
+      "UNSUPPORTED_OPERATION": false,
+      "UNSUPPORTED_FORMAT": false,
+      "INVALID_TIME_RANGE": false,
+      "DEPENDENCY_ERROR": false,
+      "MISSING_INPUT": false,
+      "OUTPUT_ERROR": false,
+      "VALIDATION_ERROR": false,
+      "TOOL_ERROR": true,
+      "CANCELLED": true,
+      "INTERNAL_ERROR": false
+    },
+    "success_exit_code": 0
+  },
+  "deterministic": true
+}
