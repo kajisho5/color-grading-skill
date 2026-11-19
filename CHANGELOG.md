@@ -1,3 +1,7 @@
+## v1.1.1 - 2026-11-19
+
+- ci: commit the contract as contract/contract.json (#43) (048a85d)
+
 ## v1.1.0 - 2026-11-12
 
 - feat: alpha mode and an opaque result on request for alpha sources (roadmap step 8, ADR-33) (#42) (935ea5c)
