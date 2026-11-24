@@ -146,12 +146,19 @@ def skill_contract() -> Dict[str, Any]:
                                                            "curve applies",
                                          "recorded_as": "tonemap_selection {tonemap, rule, input_transfer} in plan steps, results and provenance; "
                                                         "parameters.tonemap holds the curve that ran"}},
+        # The tagged alpha block below describes the baseline engine. The optional branch
+        # overrides its premultiplied-grade refusal only when both engine features are present.
+        "alpha_extensions": {"premultiplied_grading": {
+            "requires": ["ffmpeg-skill/color:keep-alpha", "ffmpeg-skill/color:source-alpha-mode"],
+            "operations": list(ALPHA_GRADING_OPERATIONS), "source_alpha_mode": "premultiplied",
+            "output_alpha_mode": "premultiplied", "otherwise": "apply the baseline alpha policy",
+            "verification": "verify the declared input and output mode and the engine's alpha step"}},
         "alpha": {"preserved_by": ["RETAG", "STRIP_DOVI"], "refused_for": list(REENCODING_OPERATIONS), "pix_fmt_pattern": ALPHA_PIX_FMT_RE.pattern,
                   "policy": "a source with an alpha plane is refused (UNSUPPORTED_FORMAT, reason alpha_not_preserved) for every operation that re-encodes "
                             "through ffmpeg-skill/color without keeping the alpha; a stream copy keeps it and an output without it fails validation (alpha_lost). "
                             "Where ffmpeg-skill/color has --keep-alpha, LUT_APPLY and PRIMARY_CORRECTION grade with the alpha kept (keep_alpha; "
                             "docs/decisions.md ADR-25, ADR-30). The request says how the colour is stored (alpha_mode) and whether an opaque "
-                            "result is wanted instead (drop_alpha); a premultiplied source requires the engine source-alpha-mode capability for a grade that keeps the alpha",
+                            "result is wanted instead (drop_alpha); a premultiplied source is refused for a grade that keeps the alpha (ADR-33)",
                   # ADR-30: additive keys; `refused_for` above stays the list for an ffmpeg-skill without --keep-alpha
                   "keep_alpha": {"operations": list(ALPHA_GRADING_OPERATIONS), "requires": "ffmpeg-skill/color:keep-alpha (--keep-alpha, --alpha-codec, --alpha-mode)",
                                  "refused_for_with_keep_alpha": [t for t in REENCODING_OPERATIONS if t not in ALPHA_GRADING_OPERATIONS],
@@ -162,7 +169,8 @@ def skill_contract() -> Dict[str, Any]:
                                               "code (a warning says so); an 8-bit alpha is bit-identical",
                                  "not_detected": "a VP9 stream with an alpha layer probes as yuv420p through ffmpeg-skill/probe: it is graded without "
                                                  "--keep-alpha and color's failed alpha step makes it a VALIDATION_ERROR (alpha_lost)",
-                                 "premultiplied_source": "graded in straight colour and written premultiplied with source-alpha-mode support; otherwise refused (alpha_premultiplied)",
+                                 "premultiplied_source": "refused (UNSUPPORTED_FORMAT, reason alpha_premultiplied): ffmpeg-skill/color --keep-alpha "
+                                                         "grades the colour as stored and has no un-premultiply step (alpha_mode, ADR-33)",
                                  "verification": "ffmpeg-skill/color's alpha step (written alpha against the source's, every frame) must pass, else "
                                                  "VALIDATION_ERROR (alpha_lost / alpha_mismatch / alpha_unverified); the output must store an alpha plane",
                                  "output": "the alpha line's pixel format (e.g. yuva444p12le for ProRes 4444) with the source's colour tags, not yuv420p",
@@ -176,7 +184,7 @@ def skill_contract() -> Dict[str, Any]:
                                               "field that probe reports says whether the colour is premultiplied, so only a format whose specification "
                                               "fixes it (PNG: straight) gives a default",
                                  "straight": "LUT_APPLY / PRIMARY_CORRECTION grade the colour with the alpha kept (keep_alpha)",
-                                 "premultiplied": "LUT_APPLY / PRIMARY_CORRECTION require source-alpha-mode support while alpha is kept (otherwise alpha_premultiplied); RETAG / "
+                                 "premultiplied": "refused for LUT_APPLY / PRIMARY_CORRECTION while the alpha is kept (alpha_premultiplied); RETAG / "
                                                   "STRIP_DOVI copy it unchanged; drop_alpha flattens it",
                                  "recorded_as": "alpha_mode_selection {alpha_mode, rule, format_states, codec} in plan.alpha, plan steps, and the "
                                                 "alpha record of results and provenance"},

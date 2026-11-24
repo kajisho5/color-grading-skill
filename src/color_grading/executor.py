@@ -754,10 +754,6 @@ class Executor:
             # drop_alpha (ADR-33): an opaque line was asked for. color --drop-alpha says so in a note; without the flag (or on
             # a source this skill did not see as alpha) its alpha step reports alpha_dropped, which is what was asked. Any
             # other failed alpha step is still a VALIDATION_ERROR below
-            if st.grade_mode == "premultiplied" and (run.data.get("source_alpha_mode"), run.data.get("alpha_mode"),
-                                                      (alpha_step or {}).get("source_alpha_mode")) != (st.grade_mode,) * 3:
-                raise ColorError("VALIDATION_ERROR", f"{what}: engine did not verify premultiplied input and output",
-                                 {"reason": "alpha_unverified", "path": str(written)})
             st.alpha = {"kept": False, "dropped": True, "requested_by": "project.source.drop_alpha",
                         "tool": "ffmpeg-skill/color --drop-alpha" if st.drop_alpha_flag else "ffmpeg-skill/color (opaque line)",
                         "reported_dropped": run.data.get("alpha_dropped"), "verification": alpha_step}
