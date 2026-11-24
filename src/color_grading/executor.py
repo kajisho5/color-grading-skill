@@ -64,9 +64,10 @@ CHECKOUT_CAPABILITIES = {"ffmpeg-skill/color:retag-h264-vui": "retag_rewrites_h2
                          "ffmpeg-skill/color:lut-bt709-legs": "lut_legs_bt709",
                          # optional: used where supported, never required by an operation (TOOL_FOR); ADR-29, ADR-30
                          "ffmpeg-skill/check:levels": "check_tool", "ffmpeg-skill/color:legalize": "color_legalize",
-                         "ffmpeg-skill/color:keep-alpha": "color_keep_alpha", "ffmpeg-skill/color:drop-alpha": "color_drop_alpha"}
+                         "ffmpeg-skill/color:keep-alpha": "color_keep_alpha", "ffmpeg-skill/color:drop-alpha": "color_drop_alpha",
+                         "ffmpeg-skill/color:source-alpha-mode": "color_source_alpha_mode"}
 OPTIONAL_CHECKOUT_CAPABILITIES = ("ffmpeg-skill/check:levels", "ffmpeg-skill/color:legalize", "ffmpeg-skill/color:keep-alpha",
-                                  "ffmpeg-skill/color:drop-alpha")
+                                  "ffmpeg-skill/color:drop-alpha", "ffmpeg-skill/color:source-alpha-mode")
 
 
 # pixel formats that carry an alpha plane (FFmpeg's names): yuva*, gbrap*, ya8/ya16, rgba/bgra/argb/abgr and their 64-bit forms
@@ -89,9 +90,7 @@ ALPHA_LINE_ENCODERS = {"prores4444": "prores_ks", "qtrle": "qtrle", "png": "png"
 # ffmpeg-skill/color --keep-alpha splits the alpha off at 8 bits (measured, ADR-30): a deeper source alpha comes back
 # within one 8-bit code, not bit-identical. Pixel formats whose alpha is deeper than 8 bits
 DEEP_ALPHA_PIX_FMT_RE = re.compile(r"^(yuva\d+p(9|10|12|16)|gbrap(10|12|14|16)|ya16|rgba64|bgra64)")
-# how the colour is written beside a kept alpha: straight, the only colour ffmpeg-skill/color --keep-alpha grades (it takes
-# every source as straight and has no step that un-premultiplies one). A source the request or its format states is
-# premultiplied is therefore refused for a grade that keeps the alpha (alpha_premultiplied, ADR-33)
+# Default for a source without a premultiplied declaration.
 ALPHA_MODE = "straight"
 
 
@@ -165,6 +164,10 @@ class NodeState:
     drop_alpha: bool = False                       # a re-encode of an alpha input flattened on request (source.drop_alpha, ADR-33)
     drop_alpha_flag: bool = False                  # ... with color --drop-alpha (where the checkout has it)
     alpha_mode_selection: Optional[Dict[str, Any]] = None   # how the alpha input's colour is taken and why (ADR-33)
+
+    @property
+    def grade_mode(self) -> str:
+        return (self.alpha_mode_selection or {}).get("alpha_mode", ALPHA_MODE)
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {"node_id": self.node.node_id, "operation_id": self.identity, "type": self.node.type,
@@ -264,7 +267,7 @@ class Executor:
                 lossy = sorted(op.op_id for op in project.operations if op.type in REENCODING_OPERATIONS and op.type not in graded)
                 grading = sorted(op.op_id for op in project.operations if op.type in ALPHA_GRADING_OPERATIONS)
                 never = [op.op_id for op in project.operations if op.type in REENCODING_OPERATIONS and op.type not in ALPHA_GRADING_OPERATIONS]
-                if grading and not never and selection["alpha_mode"] == "premultiplied":
+                if grading and not never and selection["alpha_mode"] == "premultiplied" and not (keep and self._supported("ffmpeg-skill/color:source-alpha-mode")):
                     # color --keep-alpha grades the colour as it is stored and has no un-premultiply step: the edges of a
                     # premultiplied picture would be graded at the wrong colour (darker or brighter than the fill). Refused,
                     # also where --keep-alpha is missing (updating ffmpeg-skill would not make it right either)
@@ -431,6 +434,8 @@ class Executor:
             if a and graph.nodes[n].type in REENCODING_OPERATIONS:
                 kept = line if graph.nodes[n].type in ALPHA_GRADING_OPERATIONS and not drop else None
                 overrides.setdefault(n, {})["alpha_handling"] = {"alpha_line": kept, "drop_alpha": drop}
+                if kept and selection["alpha_mode"] == "premultiplied":
+                    overrides[n]["alpha_handling"]["source_alpha_mode"] = "premultiplied"
         identities = graph.identities(source["sha256"], self.tool_versions, overrides)
         states: Dict[str, NodeState] = {}
         for n in graph.order:
@@ -567,7 +572,7 @@ class Executor:
                   "lut": states[n].lut.to_dict() if states[n].lut else None,
                   **({states[n].baked.kind: states[n].baked.provenance()} if states[n].baked is not None else {}),
                   **({"tonemap_selection": states[n].tonemap_selection} if states[n].tonemap_selection is not None else {}),
-                  **({"alpha": {"keep_alpha": True, "alpha_codec": states[n].alpha_line, "alpha_mode": ALPHA_MODE}} if states[n].alpha_line else {}),
+                  **({"alpha": {"keep_alpha": True, "alpha_codec": states[n].alpha_line, "alpha_mode": states[n].grade_mode}} if states[n].alpha_line else {}),
                   **({"alpha": {"keep_alpha": False, "drop_alpha": True, "drop_alpha_flag": states[n].drop_alpha_flag}} if states[n].drop_alpha else {}),
                   **({"alpha_mode_selection": states[n].alpha_mode_selection} if states[n].alpha_mode_selection is not None else {})}
                  for n in graph.order if states[n].node.type != "SOURCE"]
@@ -638,7 +643,8 @@ class Executor:
         colour taken and written straight. Or, when the request asks for an opaque result (drop_alpha, ADR-33), color
         --drop-alpha where the checkout has it. Every value is a table member, never request text."""
         if st.alpha_line:
-            return ["--keep-alpha", "--alpha-codec", st.alpha_line, "--alpha-mode", ALPHA_MODE]
+            source = ["--source-alpha-mode", "premultiplied"] if st.grade_mode == "premultiplied" else []
+            return ["--keep-alpha", "--alpha-codec", st.alpha_line, "--alpha-mode", st.grade_mode, *source]
         if st.drop_alpha and st.drop_alpha_flag:
             return ["--drop-alpha"]
         return []
@@ -748,6 +754,10 @@ class Executor:
             # drop_alpha (ADR-33): an opaque line was asked for. color --drop-alpha says so in a note; without the flag (or on
             # a source this skill did not see as alpha) its alpha step reports alpha_dropped, which is what was asked. Any
             # other failed alpha step is still a VALIDATION_ERROR below
+            if st.grade_mode == "premultiplied" and (run.data.get("source_alpha_mode"), run.data.get("alpha_mode"),
+                                                      (alpha_step or {}).get("source_alpha_mode")) != (st.grade_mode,) * 3:
+                raise ColorError("VALIDATION_ERROR", f"{what}: engine did not verify premultiplied input and output",
+                                 {"reason": "alpha_unverified", "path": str(written)})
             st.alpha = {"kept": False, "dropped": True, "requested_by": "project.source.drop_alpha",
                         "tool": "ffmpeg-skill/color --drop-alpha" if st.drop_alpha_flag else "ffmpeg-skill/color (opaque line)",
                         "reported_dropped": run.data.get("alpha_dropped"), "verification": alpha_step}
@@ -756,8 +766,12 @@ class Executor:
             if alpha_step is None or alpha_step.get("ok") or reported_dropped:
                 alpha_step = None
         if st.alpha_line:
+            if st.grade_mode == "premultiplied" and (run.data.get("source_alpha_mode"), run.data.get("alpha_mode"),
+                                                      (alpha_step or {}).get("source_alpha_mode")) != (st.grade_mode,) * 3:
+                raise ColorError("VALIDATION_ERROR", f"{what}: engine did not verify premultiplied input and output",
+                                 {"reason": "alpha_unverified", "path": str(written)})
             st.alpha = {"kept": bool(alpha_step and alpha_step.get("ok")), "precision_bits": 8, "alpha_codec": run.data.get("alpha_codec", st.alpha_line),
-                        "alpha_mode": run.data.get("alpha_mode", ALPHA_MODE), "source_colour": "taken as straight (not un-premultiplied)",
+                        "alpha_mode": run.data.get("alpha_mode", ALPHA_MODE), "source_colour": ("un-premultiplied before grade" if st.grade_mode == "premultiplied" else "taken as straight (not un-premultiplied)"),
                         "tool": "ffmpeg-skill/color --keep-alpha", "verification": alpha_step}
             if st.alpha_mode_selection is not None:
                 st.alpha["alpha_mode_selection"] = st.alpha_mode_selection

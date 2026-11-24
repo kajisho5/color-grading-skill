@@ -31,7 +31,7 @@ Rules for a calling agent:
 6. An alpha source (ProRes 4444, qtrle, PNG) keeps its alpha through `LUT_APPLY` / `PRIMARY_CORRECTION` when ffmpeg-skill
    has `--keep-alpha`; other re-encoding operations refuse it (`alpha_not_preserved`). Say how its colour is stored with
    `project.source.alpha_mode: straight | premultiplied` (unsaid: PNG is straight, anything else is taken as straight
-   with a warning). A premultiplied source is refused for those grades (`alpha_premultiplied`: ffmpeg-skill cannot
-   un-premultiply it). `project.source.drop_alpha: true` asks for an opaque result instead (ADR-33).
+   with a warning). Premultiplied grading requires the installed color tool to declare `--source-alpha-mode`.
+   Older engines return `alpha_premultiplied`. `project.source.drop_alpha: true` asks for an opaque result instead (ADR-33).
 
 See README.md for the schemas, operation table, error codes and limitations.

@@ -21,6 +21,7 @@ DOCTOR_SCHEMA_ID = f"{SKILL_ID}/doctor@{DOCTOR_SCHEMA_VERSION}"
 OPTIONAL_USE = {"ffmpeg-skill/check:levels": "LEGALIZE: out-of-range shares before / after (otherwise reported as not measured)",
                 "ffmpeg-skill/color:legalize": "LEGALIZE: Y'CbCr clamp after the 4:2:0 conversion in the same encode (otherwise the soft clip alone)",
                 "ffmpeg-skill/color:keep-alpha": "LUT_APPLY / PRIMARY_CORRECTION on an alpha source, alpha kept (otherwise refused, alpha_not_preserved)",
+                "ffmpeg-skill/color:source-alpha-mode": "LUT and primary corrections on premultiplied sources",
                 "ffmpeg-skill/color:drop-alpha": "project.source.drop_alpha: the alpha dropped on request with color's own note (otherwise the opaque line "
                                                  "is written and color's alpha step reports alpha_dropped, which is then expected)"}
 # capabilities used across the implemented operations, beyond the base ffmpeg/ffprobe pair

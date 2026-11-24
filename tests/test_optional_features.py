@@ -50,7 +50,7 @@ def test_each_optional_feature_needs_all_of_its_flags():
 
 @pytest.mark.parametrize("value,status", [(True, "supported"), (False, "unsupported"), (None, "unknown")])
 def test_optional_capabilities_map_the_detected_features(value, status):
-    info = SkillInfo(Path("."), "x", "2.0", {}, [], {"check_tool": value, "color_legalize": value, "color_keep_alpha": value, "color_drop_alpha": value})
+    info = SkillInfo(Path("."), "x", "2.0", {}, [], {"check_tool": value, "color_legalize": value, "color_keep_alpha": value, "color_drop_alpha": value, "color_source_alpha_mode": value})
     caps = capability_status(info, {"ffmpeg": "6.1", "ffprobe": "6.1", "available": ["filter:lut3d"]})
     assert {c: caps[c] for c in OPTIONAL_CHECKOUT_CAPABILITIES} == {c: status for c in OPTIONAL_CHECKOUT_CAPABILITIES}
 
@@ -58,7 +58,7 @@ def test_optional_capabilities_map_the_detected_features(value, status):
 def test_contract_names_the_optional_flags_and_tool():
     c = skill_contract()
     assert c["ffmpeg_skill"]["optional_flags"] == {"color": {"color_legalize": ["legalize"], "color_keep_alpha": ["keep_alpha", "alpha_codec", "alpha_mode"],
-                                                             "color_drop_alpha": ["drop_alpha"]}}
+                                                             "color_drop_alpha": ["drop_alpha"], "color_source_alpha_mode": ["source_alpha_mode"]}}
     assert set(c["ffmpeg_skill"]["flags_used"]["color"]) >= {"legalize", "keep_alpha", "alpha_codec", "alpha_mode", "drop_alpha"}
     assert c["ffmpeg_skill"]["flags_used"]["check"] == list(OPTIONAL_TOOL_FLAGS["check"]) and set(FLAGS_USED["color"]) >= set(OPTIONAL_FLAGS["color"]["color_legalize"])
     assert c["optional_capabilities"] == list(OPTIONAL_CHECKOUT_CAPABILITIES)

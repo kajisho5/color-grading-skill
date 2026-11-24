@@ -238,10 +238,15 @@ def test_png_states_straight_so_nothing_is_assumed(ws, capabilities):
 @pytest.mark.parametrize("family", ["rle", "4444"])
 @pytest.mark.parametrize("op_type", sorted(OPS))
 @pytest.mark.parametrize("cmd", ["run", "plan"])
-def test_a_premultiplied_source_is_refused_for_a_grade_that_keeps_the_alpha(ws, family, op_type, cmd):
-    """On every ffmpeg-skill: color takes the colour as stored and cannot un-premultiply it, so the edges would be graded
-    at the wrong colour; updating ffmpeg-skill would not help, so this is said before the missing --keep-alpha is."""
+def test_premultiplied_grades_follow_engine_capability(ws, capabilities, family, op_type, cmd):
     code, d = _run(_doc(f"bands_{family}_premult.mov", op_type, OPS[op_type], alpha_mode="premultiplied"), cmd)
+    if capabilities.get(KEEP) == capabilities.get("ffmpeg-skill/color:source-alpha-mode") == "supported":
+        assert code == 0 and d["ok"], d
+        if cmd == "run":
+            record = next(r["alpha"] for r in d["results"] if r["type"] == op_type)
+            assert record["kept"] and record["alpha_mode"] == "premultiplied"
+            assert record["verification"]["source_alpha_mode"] == "premultiplied"
+        return
     assert code == 6 and d["error"]["code"] == "UNSUPPORTED_FORMAT", d.get("error")
     det = d["error"]["details"]
     assert det["reason"] == "alpha_premultiplied" and det["op_ids"] == ["x"]
