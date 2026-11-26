@@ -1,3 +1,10 @@
+## v1.2.0 - 2026-11-26
+
+- Grade premultiplied masters when the installed color tool declares support (#55) (71297fc)
+- ci: a contract:breaking pull request on 1.x needs the major label (Velisa ADR-031 section 5) (#53) (f679706)
+- ci: release gate leaves contract:* labels out of the count (#50) (fcff3de)
+- ci: Velisa's reusable changelog-check/release-guard; dependencies PRs release a patch (D36, D37) (#49) (a84e9dc)
+
 ## v1.1.4 - 2026-11-19
 
 - ci(release): give the release test step an ffmpeg-skill checkout (#48) (2b11923)
