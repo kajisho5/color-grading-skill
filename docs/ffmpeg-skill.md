@@ -19,14 +19,18 @@ Optional `color` flags, used only where detected (capabilities `ffmpeg-skill/col
 `ffmpeg-skill/color:keep-alpha` and `ffmpeg-skill/color:drop-alpha`; doctor's `optional_capabilities`): `--legalize`
 (LEGALIZE's clamp after 4:2:0, in the same encode as its `--lut`, ADR-29), `--keep-alpha` / `--alpha-codec` /
 `--alpha-mode straight` (LUT_APPLY and PRIMARY_CORRECTION on an alpha source, ADR-30) and `--drop-alpha` (any re-encode
-of an alpha input when the request sets `project.source.drop_alpha`, ADR-33). Without them those operations behave as
+of an alpha input when the request sets `project.source.drop_alpha`, ADR-33), and `--source-alpha-mode premultiplied`
+next to `--keep-alpha --alpha-mode premultiplied` (capability `ffmpeg-skill/color:source-alpha-mode`: a premultiplied
+source graded with the colour divided by the alpha first, ADR-33 addendum 1). Without them those operations behave as
 before; their absence is never a `fail`. color's `verification` steps `legal_levels` and `alpha` are read: a failed one
 is a `VALIDATION_ERROR`, except an `alpha` step reporting `alpha_dropped` when the request asked for the alpha to be
 dropped.
 
-Gaps found while adding alpha modes (ADR-33, proposals there): color `--keep-alpha` takes every source's colour as
-straight and has no step that un-premultiplies one (`--alpha-mode premultiplied` only multiplies the written colour),
-so a premultiplied source is refused for a grade that keeps the alpha; and an RGB alpha source tagged colour space
+Gaps found while adding alpha modes (ADR-33, proposals there): before `--source-alpha-mode`, color `--keep-alpha`
+took every source's colour as straight and had no step that un-premultiplies one (`--alpha-mode premultiplied` only
+multiplies the written colour), so on such a checkout a premultiplied source is refused for a grade that keeps the
+alpha; with it, the premultiplied ProRes 4444 line writes the graded colour BT.709 and stores it read back as BT.601
+(measured, ADR-33 addendum 1); and an RGB alpha source tagged colour space
 `gbr` (FFmpeg's PNG encoder writes that tag in `.mov` / `.mkv`) fails there, because the tag is passed on as
 `-colorspace gbr`, a name FFmpeg's option parser does not accept.
 

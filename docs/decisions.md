@@ -703,6 +703,41 @@
   - *For a caller.* A request without the new fields runs as in 1.0.1, with the warning when an alpha source's mode is
     assumed; a premultiplied source has to be stated to be refused (unstated, it is still graded as straight, with the
     warning). A minor release (1.1.0).
+  - *Addendum 1 (1.2.0, #55; recorded here in 1.2.1): a premultiplied source is graded where the engine can
+    un-premultiply.* ffmpeg-skill/color gained the input-side alpha mode proposed above (`--source-alpha-mode
+    premultiplied`, detected as the optional capability `ffmpeg-skill/color:source-alpha-mode`, flag group
+    `color_source_alpha_mode`). With it and `--keep-alpha`, LUT_APPLY / PRIMARY_CORRECTION on a source stated as
+    premultiplied pass `--keep-alpha --alpha-codec <line> --alpha-mode premultiplied --source-alpha-mode premultiplied`:
+    color divides the colour by the alpha after the split, grades it, and premultiplies again in front of the alpha
+    line. The result is a success only when color reports `source_alpha_mode` and `alpha_mode` `premultiplied` and its
+    `alpha` step names the same source mode (`alpha_unverified` otherwise); the `alpha` record says `alpha_mode:
+    premultiplied` and `source_colour: un-premultiplied before grade`. The identity's `alpha_handling` gains
+    `source_alpha_mode: premultiplied`, so a premultiplied and a straight grade of the same file are different
+    intermediates. Without the capability (every ffmpeg-skill before it, or a checkout whose `color` lacks the flag)
+    nothing changes: `alpha_premultiplied` as above, in the same order of refusals.
+  - *Addendum 1, the contract.* The pinned `alpha` block keeps describing the baseline engine word for word, including
+    `alpha.policy` and `alpha.keep_alpha.premultiplied_source` ("refused ..."), and `alpha.alpha_mode.premultiplied`.
+    The capability-dependent path is the top-level `alpha_extensions.premultiplied_grading` (requires both engine
+    capabilities; otherwise the baseline policy applies). Why the `alpha` wording was not changed to point there:
+    video-production-agent compares `alpha` as one fatal drift key against its pin, and system-intelligence's
+    `si contract-diff` classifies any changed string value as `breaking` (`value-changed`), so a reworded or extended
+    `alpha` block would mark the colour-grading capability unavailable in the agent until a hand-reviewed re-pin and
+    would need the major label on the 1.x line here (ADR-32, Velisa ADR-031). The README, SKILL.md and this addendum
+    say instead that `alpha` is the baseline and `alpha_extensions` overrides it where its `requires` are met. The
+    contract is unchanged by 1.2.1.
+  - *Addendum 1, measured* (`tests/test_alpha_mode.py::test_a_premultiplied_grade_divides_back_to_the_opaque_colour`,
+    FFmpeg 6.1, ffmpeg-skill 4.8.1; the premultiplied band sources above). For both lines (qtrle, ProRes 4444) and both
+    grades: the alpha is untouched (qtrle bit-identical, ProRes 4444 within one 8-bit code), the alpha-0 band stays
+    black, and the half-transparent band divided by its alpha equals the opaque band within 1.7 codes (tolerance 3: an
+    8-bit code under alpha 128 holds half the precision, so the division doubles its rounding). So the edges have no
+    fringe, which is roadmap step 8's "Done when"; step 8 is ticked. The opaque band against the same grade of the
+    straight twin: qtrle within 1 code; ProRes 4444 shows the BT.709-written, BT.601-read shift (LUT_APPLY 177,126,77
+    against 181,129,75; PRIMARY_CORRECTION 92.6,187.8,255 against 83.2,183.4,255), the matrix mismatch ADR-30 found on
+    the RGB line, here on the premultiplied ProRes line (its colour goes through 16-bit RGB for the multiply). That is
+    inside ffmpeg-skill/color; the test pins exactly that shift (within 2 codes on every unclipped channel) so any other
+    change fails, and it is reported to ffmpeg-skill rather than corrected here. The test skips on a checkout without
+    the capability (ffmpeg-skill 0.12.3, 2.24.1, 3.0.0 in CI) and runs on the `main` rows on all three platforms.
+  - *Addendum 1, release.* Documentation and a test only: a patch release (1.2.1), `fix` label.
 
 - **ADR-34 The release job tests its commit before pushing it; chore / ci / docs / test pull requests release nothing (Velisa ADR-023, D37).**
   - The release commit is pushed with the default token, so no workflow runs on it on main. On 2026-11-19 two skills' mains broke this way (sound-design-skill, hyperframes-skill). Also, every merged pull request released a patch, `ci:` changes included.

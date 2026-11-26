@@ -238,6 +238,14 @@ so any release's contract is `git show vX.Y.Z:contract/contract.json`, with noth
 with `python contract/generate.py` after a contract change: a test fails when it is stale, and the release workflow
 regenerates it after the version bump.
 
+The contract's `alpha` block describes the baseline engine (any ffmpeg-skill with or without `--keep-alpha`), so its
+`policy`, `keep_alpha.premultiplied_source` and `alpha_mode.premultiplied` still say a premultiplied grade is refused.
+Read it together with `alpha_extensions`: where an extension's `requires` capabilities are `supported` in `doctor`,
+that extension overrides the baseline. `alpha_extensions.premultiplied_grading` (1.2.0) grades a premultiplied
+LUT_APPLY / PRIMARY_CORRECTION source when `ffmpeg-skill/color:keep-alpha` and `ffmpeg-skill/color:source-alpha-mode`
+are both supported. The `alpha` wording is kept as it is because callers pin that block byte for byte (ADR-33
+addendum 1).
+
 The contract states stable identifiers (`skill_id`, `operations[].type`, `operations[].parameters`,
 `operation_aliases`, `unsupported_operations`, `output_formats`, `errors.codes`), all derived from the tables the code
 runs on — there are no placeholder operations. For the AI Video Production OS registry it also carries
@@ -318,7 +326,7 @@ Stated as boundary, not as bugs to be worked around with a private filter string
 - `LUT_APPLY`'s `lut_strength` of exactly `0.0` behaves like `1.0` (full LUT) — ffmpeg-skill's own documented
   behaviour, not something this skill introduces or can fix on its own.
 - No cache eviction: `<workspace>/.color-grading/<project_id>/` grows until the caller removes it.
-- Alpha: a premultiplied grade unwraps the colour before grading and restores premultiplication on output when the installed engine declares `--source-alpha-mode`. An older engine refuses it. A source whose mode
+- Alpha: a premultiplied grade unwraps the colour before grading and restores premultiplication on output when the installed engine declares `--source-alpha-mode`. An older engine refuses it (`alpha_premultiplied`; the contract's `alpha` block states this baseline and `alpha_extensions.premultiplied_grading` the supported path, ADR-33 addendum 1). A source whose mode
   is neither stated nor fixed by its format (only PNG's is) is graded as straight with a warning (ADR-33).
   `LUT_APPLY` on an RGB alpha source (qtrle / PNG) can shift colours on some FFmpeg builds, with a warning (ADR-30), and
   a PNG source tagged colour space `gbr` (FFmpeg's PNG encoder writes that) fails inside ffmpeg-skill/color
