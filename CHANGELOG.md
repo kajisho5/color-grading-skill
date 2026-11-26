@@ -1,3 +1,7 @@
+## v1.2.1 - 2026-11-26
+
+- Fix: say where premultiplied grading is supported, and test its pixels (#56) (877f9d0)
+
 ## v1.2.0 - 2026-11-26
 
 - Grade premultiplied masters when the installed color tool declares support (#55) (71297fc)
