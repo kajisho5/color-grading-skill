@@ -2,8 +2,9 @@
 
 `project.source.alpha_mode` (straight | premultiplied) says how the colour beside the alpha is stored; without it the
 format decides where its specification fixes it (PNG: straight), and anything else is taken as straight with a
-warning, never silently. ffmpeg-skill/color --keep-alpha grades the colour as stored and cannot un-premultiply it, so a
-premultiplied source is refused for a grade that keeps the alpha; `project.source.drop_alpha` asks for an opaque
+warning, never silently. A premultiplied source is graded with the alpha kept only where ffmpeg-skill/color has
+--source-alpha-mode (it divides the colour by the alpha first, ADR-33 addendum 1); on an older checkout, which grades
+the colour as stored, it is refused; `project.source.drop_alpha` asks for an opaque
 result instead, and is the only way an alpha source's alpha is given up.
 
 The real runs use small synthetic sources made here with ffmpeg's lavfi: one fill colour (0x4a7fb5) in every pixel
@@ -25,6 +26,7 @@ from conftest import one_json, request_doc, run_cli
 
 KEEP = "ffmpeg-skill/color:keep-alpha"
 DROP = "ffmpeg-skill/color:drop-alpha"
+SOURCE_MODE = "ffmpeg-skill/color:source-alpha-mode"
 W, H, BAND, FRAMES = 96, 32, 32, 10
 FILL = (0x4a, 0x7f, 0xb5)
 ALPHAS = (0, 128, 255)
@@ -32,6 +34,9 @@ ALPHAS = (0, 128, 255)
 # H.264 4:2:0 at CRF 18 and the alpha line 4:4:4, so a flat colour lands a code or two apart (measured with FFmpeg 6.1:
 # LUT_APPLY up to 1.0, PRIMARY_CORRECTION up to 2.4)
 ACROSS_LINES = 3.0
+# a premultiplied grade's half-transparent band divided by its alpha against its opaque band, in 8-bit codes (ADR-33
+# addendum 1; measured with FFmpeg 6.1 and ffmpeg-skill 4.8.1: up to 1.7)
+PREMULT_DIVIDED = 3.0
 _BANDS = (f"color=c=0x4a7fb5:s={W}x{H}:d=1:r={FRAMES},format=rgba,"
           f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lt(X,{BAND}),0,if(lt(X,{2 * BAND}),128,255))'")
 _TO_709 = "scale=out_color_matrix=bt709:out_range=tv"
@@ -240,7 +245,7 @@ def test_png_states_straight_so_nothing_is_assumed(ws, capabilities):
 @pytest.mark.parametrize("cmd", ["run", "plan"])
 def test_premultiplied_grades_follow_engine_capability(ws, capabilities, family, op_type, cmd):
     code, d = _run(_doc(f"bands_{family}_premult.mov", op_type, OPS[op_type], alpha_mode="premultiplied"), cmd)
-    if capabilities.get(KEEP) == capabilities.get("ffmpeg-skill/color:source-alpha-mode") == "supported":
+    if capabilities.get(KEEP) == capabilities.get(SOURCE_MODE) == "supported":
         assert code == 0 and d["ok"], d
         if cmd == "run":
             record = next(r["alpha"] for r in d["results"] if r["type"] == op_type)
@@ -253,6 +258,44 @@ def test_premultiplied_grades_follow_engine_capability(ws, capabilities, family,
     assert det["alpha_mode_selection"]["alpha_mode"] == "premultiplied" and det["alpha_mode_selection"]["rule"] == "request"
     assert "un-premultiply" in d["error"]["message"] and "drop_alpha" in d["error"]["message"] and "alpha_mode: straight" in d["error"]["message"]
     assert not (ws / "out").exists() and not (ws / ".color-grading").exists()
+
+
+@pytest.mark.parametrize("family", ["rle", "4444"])
+@pytest.mark.parametrize("op_type", sorted(OPS))
+def test_a_premultiplied_grade_divides_back_to_the_opaque_colour(ws, capabilities, family, op_type):
+    """The pixels of a premultiplied grade (ADR-33 addendum 1): the written colour is still premultiplied, so the
+    transparent band is black, and the half-transparent band divided by its alpha is the graded opaque colour. A grade
+    applied to the stored (premultiplied) colour instead would leave the divided partial band off the opaque one for
+    every non-linear or offset grade (the invert LUT turns premultiplied black into white). Needs color's
+    --source-alpha-mode; an engine without it refuses the request (test above)."""
+    if not capabilities.get(KEEP) == capabilities.get(SOURCE_MODE) == "supported":
+        pytest.skip(f"this ffmpeg-skill checkout has no {SOURCE_MODE} (the request is refused, alpha_premultiplied)")
+    code, d = _run(_doc(f"bands_{family}_premult.mov", op_type, OPS[op_type], alpha_mode="premultiplied"))
+    assert code == 0 and d["ok"], d.get("error")
+    out = ws / "out" / "main.mov"
+    src_alpha, out_alpha = _alpha(ws / f"bands_{family}_premult.mov"), _alpha(out)
+    assert len(src_alpha) == len(out_alpha) == FRAMES * W * H
+    # the alpha itself is not graded: qtrle's 8-bit alpha bit-identical, ProRes 4444's within one 8-bit code (ADR-30)
+    assert src_alpha == out_alpha if family == "rle" else max(abs(a - b) for a, b in zip(src_alpha, out_alpha)) <= 1
+    alphas = [out_alpha[16 * W + b * BAND + 16] for b in range(3)]
+    assert _near(alphas, ALPHAS, 0 if family == "rle" else 1), alphas
+    px = _rgba(out)
+    clear, partial, opaque = (_band_colour(px, b) for b in range(3))
+    divided = tuple(c * 255 / alphas[1] for c in partial)
+    print(f"{family} {op_type} premultiplied: bands {clear} {partial} {opaque}, partial / alpha {divided}")
+    assert _near(clear, (0, 0, 0), 1), clear                       # premultiplied: no colour where alpha is 0
+    # 8-bit codes under alpha 128 carry half the precision, so dividing doubles their rounding (measured up to 1.7)
+    assert _near(divided, opaque, PREMULT_DIVIDED), (divided, opaque)
+    # the opaque band against the same grade of the straight twin (the colour without premultiplication)
+    code, ref = _run(_doc(f"bands_{family}.mov", op_type, OPS[op_type], alpha_mode="straight", out_dir="ref"), out="ref")
+    assert code == 0 and ref["ok"], ref.get("error")
+    straight = _band_colour(_rgba(ws / "ref" / "main.mov"), 2)
+    if not _near(opaque, straight, ACROSS_LINES):
+        # measured with ffmpeg-skill 4.8.1 on ProRes 4444 (FFmpeg 6.1): the premultiplied line writes the graded colour as
+        # BT.709 and stores it read back with BT.601's matrix, the shift ADR-30 names for qtrle LUT_APPLY; exactly that
+        # shift, within 2 codes on every channel the straight grade did not clip at 255 (ADR-33 addendum 1). Anything else fails
+        shifted = _bt709_read_as_bt601(straight)
+        assert all(abs(o - e) <= 2.0 for o, e, s in zip(opaque, shifted, straight) if s < 254.5), (opaque, straight, shifted)
 
 
 def test_a_premultiplied_source_is_copied_unchanged_by_a_stream_copy(ws):

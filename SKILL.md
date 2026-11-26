@@ -32,6 +32,8 @@ Rules for a calling agent:
    has `--keep-alpha`; other re-encoding operations refuse it (`alpha_not_preserved`). Say how its colour is stored with
    `project.source.alpha_mode: straight | premultiplied` (unsaid: PNG is straight, anything else is taken as straight
    with a warning). Premultiplied grading requires the installed color tool to declare `--source-alpha-mode`.
-   Older engines return `alpha_premultiplied`. `project.source.drop_alpha: true` asks for an opaque result instead (ADR-33).
+   Older engines return `alpha_premultiplied`. The contract's `alpha` block states that baseline refusal; where both
+   capabilities in `alpha_extensions.premultiplied_grading.requires` are `supported` in `doctor`, that extension
+   applies instead (ADR-33 addendum 1). `project.source.drop_alpha: true` asks for an opaque result instead (ADR-33).
 
 See README.md for the schemas, operation table, error codes and limitations.
