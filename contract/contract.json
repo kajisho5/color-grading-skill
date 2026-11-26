@@ -974,6 +974,22 @@
       "recorded_as": "tonemap_selection {tonemap, rule, input_transfer} in plan steps, results and provenance; parameters.tonemap holds the curve that ran"
     }
   },
+  "alpha_extensions": {
+    "premultiplied_grading": {
+      "requires": [
+        "ffmpeg-skill/color:keep-alpha",
+        "ffmpeg-skill/color:source-alpha-mode"
+      ],
+      "operations": [
+        "LUT_APPLY",
+        "PRIMARY_CORRECTION"
+      ],
+      "source_alpha_mode": "premultiplied",
+      "output_alpha_mode": "premultiplied",
+      "otherwise": "apply the baseline alpha policy",
+      "verification": "verify the declared input and output mode and the engine's alpha step"
+    }
+  },
   "alpha": {
     "preserved_by": [
       "RETAG",
@@ -1107,7 +1123,8 @@
     "ffmpeg-skill/check:levels",
     "ffmpeg-skill/color:legalize",
     "ffmpeg-skill/color:keep-alpha",
-    "ffmpeg-skill/color:drop-alpha"
+    "ffmpeg-skill/color:drop-alpha",
+    "ffmpeg-skill/color:source-alpha-mode"
   ],
   "x264": {
     "crf_range": [
@@ -1204,6 +1221,7 @@
         "quality",
         "crf",
         "legalize",
+        "source_alpha_mode",
         "keep_alpha",
         "alpha_codec",
         "alpha_mode",
@@ -1274,6 +1292,9 @@
       "color": {
         "color_legalize": [
           "legalize"
+        ],
+        "color_source_alpha_mode": [
+          "source_alpha_mode"
         ],
         "color_keep_alpha": [
           "keep_alpha",

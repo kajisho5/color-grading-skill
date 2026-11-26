@@ -146,6 +146,13 @@ def skill_contract() -> Dict[str, Any]:
                                                            "curve applies",
                                          "recorded_as": "tonemap_selection {tonemap, rule, input_transfer} in plan steps, results and provenance; "
                                                         "parameters.tonemap holds the curve that ran"}},
+        # The tagged alpha block below describes the baseline engine. The optional branch
+        # overrides its premultiplied-grade refusal only when both engine features are present.
+        "alpha_extensions": {"premultiplied_grading": {
+            "requires": ["ffmpeg-skill/color:keep-alpha", "ffmpeg-skill/color:source-alpha-mode"],
+            "operations": list(ALPHA_GRADING_OPERATIONS), "source_alpha_mode": "premultiplied",
+            "output_alpha_mode": "premultiplied", "otherwise": "apply the baseline alpha policy",
+            "verification": "verify the declared input and output mode and the engine's alpha step"}},
         "alpha": {"preserved_by": ["RETAG", "STRIP_DOVI"], "refused_for": list(REENCODING_OPERATIONS), "pix_fmt_pattern": ALPHA_PIX_FMT_RE.pattern,
                   "policy": "a source with an alpha plane is refused (UNSUPPORTED_FORMAT, reason alpha_not_preserved) for every operation that re-encodes "
                             "through ffmpeg-skill/color without keeping the alpha; a stream copy keeps it and an output without it fails validation (alpha_lost). "

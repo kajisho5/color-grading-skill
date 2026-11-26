@@ -47,6 +47,7 @@ OPTIONAL_TOOL_FLAGS: Dict[str, Tuple[str, ...]] = {"look": ("input", "output", "
 # optional flags of a required tool: feature key -> flags that must all be present. Without them only what needs the
 # feature falls back (LEGALIZE without its clamp, ADR-29; an alpha source refused as before, ADR-30; ADR-33)
 OPTIONAL_FLAGS: Dict[str, Dict[str, Tuple[str, ...]]] = {"color": {"color_legalize": ("legalize",),
+                                                                   "color_source_alpha_mode": ("source_alpha_mode",),
                                                                    "color_keep_alpha": ("keep_alpha", "alpha_codec", "alpha_mode"),
                                                                    # an alpha source flattened on request (drop_alpha, ADR-33):
                                                                    # without the flag color writes the same opaque picture and its
